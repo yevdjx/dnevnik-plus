@@ -20,4 +20,15 @@ void main() {
     expect(arc.name, 'Учёба');
     expect(arc.entryCount, 4);
   });
+
+  test('MoodLog reads SQLite row', () {
+  final log = MoodLog.fromMap({
+    'id': 3,
+    'mood': 4,
+    'created_at': '2026-11-12T20:00:00',
+  });
+  expect(log.id, 3);
+  expect(log.mood, 4);
+  expect(log.createdAt.day, 12);
+});
 }

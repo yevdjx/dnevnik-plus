@@ -15,7 +15,7 @@ class DiaryDatabase {
     final directory = await getDatabasesPath();
     _database = await openDatabase(
       join(directory, 'diary.db'), // Та же БД, что и в версии 0.1
-      version: 2,
+      version: 3,
       onConfigure: (db) async {
         await db.execute('PRAGMA foreign_keys = ON');
       },
@@ -30,11 +30,15 @@ class DiaryDatabase {
           )
         ''');
         await _createArcTables(db);
+        await _createMoodTable(db);
       },
       onUpgrade: (db, oldVersion, newVersion) async {
         if (oldVersion < 2) {
           // Не трогаем entries: уже существующие записи сохранятся.
           await _createArcTables(db);
+        }
+        if (oldVersion < 3) {
+          await _createMoodTable(db);
         }
       },
     );
@@ -61,6 +65,42 @@ class DiaryDatabase {
       CREATE INDEX IF NOT EXISTS idx_entry_arcs_arc_id
       ON entry_arcs(arc_id)
     ''');
+  }
+
+  static Future<void> _createMoodTable(DatabaseExecutor db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS mood_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        mood INTEGER NOT NULL CHECK (mood BETWEEN 0 AND 4),
+        created_at TEXT NOT NULL
+      )
+    ''');
+    await db.execute('''
+      CREATE INDEX IF NOT EXISTS idx_mood_logs_created_at
+      ON mood_logs(created_at)
+    ''');
+  }
+
+  Future<void> addMoodLog(int mood) async {
+    if (mood < 0 || mood > 4) {
+      throw ArgumentError.value(mood, 'mood', 'Должно быть от 0 до 4');
+    }
+    final db = await database;
+    await db.insert('mood_logs', {
+      'mood': mood,
+      'created_at': DateTime.now().toIso8601String(),
+    });
+  }
+
+  Future<List<MoodLog>> getMoodLogs() async {
+    final db = await database;
+    final rows = await db.query('mood_logs', orderBy: 'created_at DESC, id DESC');
+    return rows.map(MoodLog.fromMap).toList();
+  }
+
+  Future<void> deleteMoodLog(int id) async {
+    final db = await database;
+    await db.delete('mood_logs', where: 'id = ?', whereArgs: [id]);
   }
 
   Future<List<DiaryEntry>> getEntries({int? arcId}) async {

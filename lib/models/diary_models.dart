@@ -43,3 +43,19 @@ class DiaryArc {
     );
   }
 }
+
+
+/// Одна самостоятельная отметка настроения (без дневниковой записи).
+class MoodLog {
+  const MoodLog({required this.id, required this.mood, required this.createdAt});
+
+  final int id;
+  final int mood; // 0..4: от грустного до радостного
+  final DateTime createdAt;
+
+  factory MoodLog.fromMap(Map<String, Object?> map) => MoodLog(
+        id: map['id'] as int,
+        mood: map['mood'] as int,
+        createdAt: DateTime.parse(map['created_at'] as String),
+      );
+}

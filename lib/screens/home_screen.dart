@@ -5,6 +5,7 @@ import '../models/diary_models.dart';
 import 'arc_detail.dart';
 import 'entry_detail.dart';
 import 'entry_editor.dart';
+import 'mood_history.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -20,6 +21,8 @@ class _HomeScreenState extends State<HomeScreen> {
   List<DiaryEntry> entries = [];
   List<DiaryArc> arcs = [];
   bool loading = true;
+  List<MoodLog> moodLogs = [];
+  bool savingMood = false;
 
   @override
   void initState() {
@@ -31,10 +34,12 @@ class _HomeScreenState extends State<HomeScreen> {
     try {
       final loadedEntries = await DiaryDatabase.instance.getEntries();
       final loadedArcs = await DiaryDatabase.instance.getArcs();
+      final loadedMoods = await DiaryDatabase.instance.getMoodLogs();
       if (!mounted) return;
       setState(() {
         entries = loadedEntries;
         arcs = loadedArcs;
+        moodLogs = loadedMoods;
         loading = false;
       });
     } catch (error) {
@@ -44,6 +49,34 @@ class _HomeScreenState extends State<HomeScreen> {
         SnackBar(content: Text('Ошибка загрузки данных: $error')),
       );
     }
+  }
+
+  Future<void> saveQuickMood(int mood) async {
+    if (savingMood) return;
+    setState(() => savingMood = true);
+    try {
+      await DiaryDatabase.instance.addMoodLog(mood);
+      await reload();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Настроение сохранено 💜')),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Не удалось сохранить настроение: $error')),
+      );
+    } finally {
+      if (mounted) setState(() => savingMood = false);
+    }
+  }
+
+  Future<void> openMoodHistory() async {
+    await Navigator.push<void>(
+      context,
+      MaterialPageRoute(builder: (_) => const MoodHistoryScreen()),
+    );
+    await reload();
   }
 
   Future<void> openEditor() async {
@@ -127,9 +160,23 @@ class _HomeScreenState extends State<HomeScreen> {
         Row(
           mainAxisAlignment: MainAxisAlignment.spaceAround,
           children: [
-            for (final mood in moods)
-              Text(mood, style: const TextStyle(fontSize: 30)),
+            for (int i = 0; i < moods.length; i++)
+              IconButton(
+                tooltip: 'Сохранить настроение: ${moods[i]}',
+                onPressed: savingMood ? null : () => saveQuickMood(i),
+                icon: Text(moods[i], style: const TextStyle(fontSize: 30)),
+              ),
           ],
+        ),
+        const SizedBox(height: 10),
+        Card(
+          child: ListTile(
+            leading: const Icon(Icons.show_chart),
+            title: const Text('История настроения'),
+            subtitle: Text('Быстрых отметок: ${moodLogs.length}'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: openMoodHistory,
+          ),
         ),
         const SizedBox(height: 28),
         const Text('Мои записи',
