@@ -6,6 +6,7 @@ import 'arc_detail.dart';
 import 'entry_detail.dart';
 import 'entry_editor.dart';
 import 'mood_history.dart';
+import 'search_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -235,7 +236,16 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Дневник+'), centerTitle: true),
+      appBar: AppBar(title: const Text('Дневник+'), centerTitle: true,
+        actions: [IconButton(
+          tooltip: 'Поиск', icon: const Icon(Icons.search),
+          onPressed: () async {
+            await Navigator.push<void>(context,
+                MaterialPageRoute(builder: (_) => const SearchScreen()));
+            if (mounted) await reload();
+          },
+        )],
+      ),
       body: loading
           ? const Center(child: CircularProgressIndicator())
           : selectedTab == 0

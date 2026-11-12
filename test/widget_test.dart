@@ -31,4 +31,22 @@ void main() {
   expect(log.mood, 4);
   expect(log.createdAt.day, 12);
 });
+
+test('Motif reads SQLite row', () {
+  final motif = DiaryMotif.fromMap({'id': 9, 'name': 'Дружба'});
+  expect(motif.id, 9);
+  expect(motif.name, 'Дружба');
+});
+
+test('Context preserves fields', () {
+  final context = EntryContext.fromMap({
+    'place': 'Школа', 'time_of_day': 'Утро',
+    'people': 'Друзья', 'atmosphere': 'Солнечно', 'life_period': '10 класс',
+  });
+  final map = context.toMap(5);
+  expect(map['entry_id'], 5);
+  expect(map['place'], 'Школа');
+  expect(map['people'], 'Друзья');
+});
+
 }

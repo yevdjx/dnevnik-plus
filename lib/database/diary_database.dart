@@ -15,7 +15,7 @@ class DiaryDatabase {
     final directory = await getDatabasesPath();
     _database = await openDatabase(
       join(directory, 'diary.db'), // Та же БД, что и в версии 0.1
-      version: 3,
+      version: 4,
       onConfigure: (db) async {
         await db.execute('PRAGMA foreign_keys = ON');
       },
@@ -31,6 +31,7 @@ class DiaryDatabase {
         ''');
         await _createArcTables(db);
         await _createMoodTable(db);
+        await _createMotifContextTables(db);
       },
       onUpgrade: (db, oldVersion, newVersion) async {
         if (oldVersion < 2) {
@@ -39,6 +40,9 @@ class DiaryDatabase {
         }
         if (oldVersion < 3) {
           await _createMoodTable(db);
+        }
+        if (oldVersion < 4) {
+          await _createMotifContextTables(db);
         }
       },
     );
@@ -79,6 +83,119 @@ class DiaryDatabase {
       CREATE INDEX IF NOT EXISTS idx_mood_logs_created_at
       ON mood_logs(created_at)
     ''');
+  }
+
+  static Future<void> _createMotifContextTables(DatabaseExecutor db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS motifs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL UNIQUE COLLATE NOCASE
+      )
+    ''');
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS entry_motifs (
+        entry_id INTEGER NOT NULL,
+        motif_id INTEGER NOT NULL,
+        PRIMARY KEY (entry_id, motif_id),
+        FOREIGN KEY (entry_id) REFERENCES entries(id) ON DELETE CASCADE,
+        FOREIGN KEY (motif_id) REFERENCES motifs(id) ON DELETE CASCADE
+      )
+    ''');
+    await db.execute('''
+      CREATE INDEX IF NOT EXISTS idx_entry_motifs_motif
+      ON entry_motifs(motif_id)
+    ''');
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS entry_context (
+        entry_id INTEGER PRIMARY KEY,
+        place TEXT NOT NULL DEFAULT '',
+        time_of_day TEXT NOT NULL DEFAULT '',
+        people TEXT NOT NULL DEFAULT '',
+        atmosphere TEXT NOT NULL DEFAULT '',
+        life_period TEXT NOT NULL DEFAULT '',
+        FOREIGN KEY (entry_id) REFERENCES entries(id) ON DELETE CASCADE
+      )
+    ''');
+  }
+
+  Future<List<DiaryMotif>> getMotifs() async {
+    final db = await database;
+    final rows = await db.query('motifs', orderBy: 'name COLLATE NOCASE');
+    return rows.map(DiaryMotif.fromMap).toList();
+  }
+
+  Future<int> createMotif(String name) async {
+    final cleaned = name.trim();
+    if (cleaned.isEmpty) throw ArgumentError('Введите название мотива');
+    final db = await database;
+    return db.insert('motifs', {'name': cleaned});
+  }
+
+  Future<void> deleteMotif(int id) async {
+    final db = await database;
+    await db.delete('motifs', where: 'id = ?', whereArgs: [id]);
+  }
+
+  Future<Set<int>> getEntryMotifIds(int entryId) async {
+    final db = await database;
+    final rows = await db.query('entry_motifs', columns: ['motif_id'],
+        where: 'entry_id = ?', whereArgs: [entryId]);
+    return rows.map((row) => row['motif_id'] as int).toSet();
+  }
+
+  Future<EntryContext> getEntryContext(int entryId) async {
+    final db = await database;
+    final rows = await db.query('entry_context',
+        where: 'entry_id = ?', whereArgs: [entryId], limit: 1);
+    return rows.isEmpty ? const EntryContext() : EntryContext.fromMap(rows.first);
+  }
+
+  Future<List<DiaryEntry>> searchEntries(EntryFilters filters) async {
+    final db = await database;
+    final conditions = <String>[];
+    final args = <Object?>[];
+    if (filters.text.trim().isNotEmpty) {
+      conditions.add('(e.title LIKE ? OR e.content LIKE ?)');
+      final pattern = '%${filters.text.trim()}%';
+      args.addAll([pattern, pattern]);
+    }
+    if (filters.arcId != null) {
+      conditions.add('EXISTS (SELECT 1 FROM entry_arcs ea '
+          'WHERE ea.entry_id = e.id AND ea.arc_id = ?)');
+      args.add(filters.arcId);
+    }
+    if (filters.motifId != null) {
+      conditions.add('EXISTS (SELECT 1 FROM entry_motifs em '
+          'WHERE em.entry_id = e.id AND em.motif_id = ?)');
+      args.add(filters.motifId);
+    }
+    if (filters.mood != null) {
+      conditions.add('e.mood = ?');
+      args.add(filters.mood);
+    }
+    if (filters.from != null) {
+      conditions.add('e.created_at >= ?');
+      final d = filters.from!;
+      args.add(DateTime(d.year, d.month, d.day).toIso8601String());
+    }
+    if (filters.to != null) {
+      conditions.add('e.created_at < ?');
+      final d = filters.to!;
+      args.add(DateTime(d.year, d.month, d.day + 1).toIso8601String());
+    }
+    if (filters.contextText.trim().isNotEmpty) {
+      conditions.add('EXISTS (SELECT 1 FROM entry_context c WHERE c.entry_id = e.id '
+          'AND (c.place LIKE ? OR c.time_of_day LIKE ? OR c.people LIKE ? '
+          'OR c.atmosphere LIKE ? OR c.life_period LIKE ?))');
+      final pattern = '%${filters.contextText.trim()}%';
+      args.addAll(List.filled(5, pattern));
+    }
+    final where = conditions.isEmpty ? '' : 'WHERE ${conditions.join(' AND ')}';
+    final rows = await db.rawQuery('''
+      SELECT e.* FROM entries e $where
+      ORDER BY e.created_at DESC, e.id DESC
+    ''', args);
+    return rows.map(DiaryEntry.fromMap).toList();
   }
 
   Future<void> addMoodLog(int mood) async {
@@ -159,6 +276,8 @@ class DiaryDatabase {
     required String content,
     required int mood,
     required Set<int> arcIds,
+    Set<int> motifIds = const {},
+    EntryContext entryContext = const EntryContext(),
   }) async {
     final db = await database;
     await db.transaction((txn) async {
@@ -184,6 +303,12 @@ class DiaryDatabase {
           whereArgs: [id],
         );
       }
+      await txn.delete('entry_motifs', where: 'entry_id = ?', whereArgs: [entryId]);
+      for (final motifId in motifIds) {
+        await txn.insert('entry_motifs', {'entry_id': entryId, 'motif_id': motifId});
+      }
+      await txn.insert('entry_context', entryContext.toMap(entryId),
+          conflictAlgorithm: ConflictAlgorithm.replace);
       for (final arcId in arcIds) {
         await txn.insert('entry_arcs', {
           'entry_id': entryId,
