@@ -1,30 +1,23 @@
-// This is a basic Flutter widget test.
-//
-// To perform an interaction with a widget in your test, use the WidgetTester
-// utility in the flutter_test package. For example, you can send tap and scroll
-// gestures. You can also use WidgetTester to find child widgets in the widget
-// tree, read text, and verify that the values of widget properties are correct.
-
 import 'package:flutter_test/flutter_test.dart';
-import 'package:material_ui/material_ui.dart';
-
-import 'package:dnevnik_plus/main.dart';
+import 'package:dnevnik_plus/models/diary_models.dart';
 
 void main() {
-  testWidgets('Counter increments smoke test', (WidgetTester tester) async {
-    // Build our app and trigger a frame.
-    await tester.pumpWidget(const MyApp());
+  test('DiaryEntry reads existing SQLite row', () {
+    final entry = DiaryEntry.fromMap({
+      'id': 7,
+      'title': 'Тест',
+      'content': 'Первая запись',
+      'mood': 3,
+      'created_at': '2026-11-12T15:00:00',
+    });
+    expect(entry.id, 7);
+    expect(entry.title, 'Тест');
+    expect(entry.mood, 3);
+  });
 
-    // Verify that our counter starts at 0.
-    expect(find.text('0'), findsOneWidget);
-    expect(find.text('1'), findsNothing);
-
-    // Tap the '+' icon and trigger a frame.
-    await tester.tap(find.byIcon(Icons.add));
-    await tester.pump();
-
-    // Verify that our counter has incremented.
-    expect(find.text('0'), findsNothing);
-    expect(find.text('1'), findsOneWidget);
+  test('DiaryArc reads count from SQLite row', () {
+    final arc = DiaryArc.fromMap({'id': 2, 'name': 'Учёба', 'entry_count': 4});
+    expect(arc.name, 'Учёба');
+    expect(arc.entryCount, 4);
   });
 }

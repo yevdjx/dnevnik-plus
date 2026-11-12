@@ -1,0 +1,212 @@
+import 'package:flutter/material.dart';
+
+import '../database/diary_database.dart';
+import '../models/diary_models.dart';
+import 'arc_detail.dart';
+import 'entry_detail.dart';
+import 'entry_editor.dart';
+
+class HomeScreen extends StatefulWidget {
+  const HomeScreen({super.key});
+
+  @override
+  State<HomeScreen> createState() => _HomeScreenState();
+}
+
+class _HomeScreenState extends State<HomeScreen> {
+  static const moods = ['😢', '😕', '😐', '🙂', '😄'];
+
+  int selectedTab = 0;
+  List<DiaryEntry> entries = [];
+  List<DiaryArc> arcs = [];
+  bool loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    reload();
+  }
+
+  Future<void> reload() async {
+    try {
+      final loadedEntries = await DiaryDatabase.instance.getEntries();
+      final loadedArcs = await DiaryDatabase.instance.getArcs();
+      if (!mounted) return;
+      setState(() {
+        entries = loadedEntries;
+        arcs = loadedArcs;
+        loading = false;
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => loading = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Ошибка загрузки данных: $error')),
+      );
+    }
+  }
+
+  Future<void> openEditor() async {
+    final saved = await Navigator.push<bool>(
+      context,
+      MaterialPageRoute(builder: (_) => const EntryEditor()),
+    );
+    if (saved == true) await reload();
+  }
+
+  Future<void> openEntry(DiaryEntry entry) async {
+    final changed = await Navigator.push<bool>(
+      context,
+      MaterialPageRoute(builder: (_) => EntryDetail(entry: entry)),
+    );
+    if (changed == true) await reload();
+  }
+
+  Future<void> openArc(DiaryArc arc) async {
+    await Navigator.push<bool>(
+      context,
+      MaterialPageRoute(builder: (_) => ArcDetail(arc: arc)),
+    );
+    // Обновляем счётчики и ленту после редактирования/удаления внутри арки.
+    await reload();
+  }
+
+  Future<void> createArc() async {
+    final controller = TextEditingController();
+    final name = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Новая арка'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          maxLength: 60,
+          decoration: const InputDecoration(
+            labelText: 'Название',
+            hintText: 'Например, Дружба',
+          ),
+          onSubmitted: (value) => Navigator.pop(dialogContext, value),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('Отмена'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, controller.text),
+            child: const Text('Создать'),
+          ),
+        ],
+      ),
+    );
+    // Освобождаем контроллер после завершения закрытия диалога.
+    // Его жизненный цикл завершится с выходом из этого метода.
+    final cleaned = name?.trim() ?? '';
+    if (cleaned.isEmpty || !mounted) return;
+    try {
+      await DiaryDatabase.instance.createArc(cleaned);
+      await reload();
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Не удалось создать арку. Возможно, такое название уже есть.')),
+      );
+    }
+  }
+
+  Widget buildEntries() {
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 80),
+      children: [
+        const Text('Привет! 🌿',
+            style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold)),
+        const SizedBox(height: 10),
+        const Text('Как ты себя чувствуешь сегодня?',
+            style: TextStyle(fontSize: 18)),
+        const SizedBox(height: 14),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceAround,
+          children: [
+            for (final mood in moods)
+              Text(mood, style: const TextStyle(fontSize: 30)),
+          ],
+        ),
+        const SizedBox(height: 28),
+        const Text('Мои записи',
+            style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
+        const SizedBox(height: 12),
+        if (entries.isEmpty)
+          const Padding(
+            padding: EdgeInsets.all(30),
+            child: Center(child: Text('Пока здесь пусто.\nНачни с первой записи 💜',
+                textAlign: TextAlign.center)),
+          )
+        else
+          for (final entry in entries)
+            Card(
+              child: ListTile(
+                leading: Text(moods[entry.mood.clamp(0, 4).toInt()],
+                    style: const TextStyle(fontSize: 27)),
+                title: Text(entry.title),
+                subtitle: Text(entry.content,
+                    maxLines: 2, overflow: TextOverflow.ellipsis),
+                onTap: () => openEntry(entry),
+              ),
+            ),
+      ],
+    );
+  }
+
+  Widget buildArcs() {
+    if (arcs.isEmpty) {
+      return const Center(
+        child: Padding(
+          padding: EdgeInsets.all(24),
+          child: Text('Арки пока не созданы.\nНажми «Новая арка»!',
+              textAlign: TextAlign.center),
+        ),
+      );
+    }
+    return ListView.builder(
+      padding: const EdgeInsets.fromLTRB(12, 12, 12, 80),
+      itemCount: arcs.length,
+      itemBuilder: (context, index) {
+        final arc = arcs[index];
+        return Card(
+          child: ListTile(
+            leading: const Icon(Icons.auto_awesome_outlined),
+            title: Text(arc.name),
+            subtitle: Text('Записей: ${arc.entryCount}'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => openArc(arc),
+          ),
+        );
+      },
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Дневник+'), centerTitle: true),
+      body: loading
+          ? const Center(child: CircularProgressIndicator())
+          : selectedTab == 0
+              ? buildEntries()
+              : buildArcs(),
+      bottomNavigationBar: NavigationBar(
+        selectedIndex: selectedTab,
+        onDestinationSelected: (index) => setState(() => selectedTab = index),
+        destinations: const [
+          NavigationDestination(icon: Icon(Icons.view_agenda_outlined), label: 'Лента'),
+          NavigationDestination(icon: Icon(Icons.hub_outlined), label: 'Арки'),
+        ],
+      ),
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: selectedTab == 0 ? openEditor : createArc,
+        icon: Icon(selectedTab == 0 ? Icons.edit_outlined : Icons.add),
+        label: Text(selectedTab == 0 ? 'Новая запись' : 'Новая арка'),
+      ),
+    );
+  }
+}
