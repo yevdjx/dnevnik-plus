@@ -15,7 +15,7 @@ class DiaryDatabase {
     final directory = await getDatabasesPath();
     _database = await openDatabase(
       join(directory, 'diary.db'), // Та же БД, что и в версии 0.1
-      version: 5,
+      version: 6,
       onConfigure: (db) async {
         await db.execute('PRAGMA foreign_keys = ON');
       },
@@ -33,6 +33,7 @@ class DiaryDatabase {
         await _createMoodTable(db);
         await _createMotifContextTables(db);
         await _createReflectionTables(db);
+        await _createWellbeingTables(db);
       },
       onUpgrade: (db, oldVersion, newVersion) async {
         if (oldVersion < 2) {
@@ -47,6 +48,9 @@ class DiaryDatabase {
         }
         if (oldVersion < 5) {
           await _createReflectionTables(db);
+        }
+        if (oldVersion < 6) {
+          await _createWellbeingTables(db);
         }
       },
     );
@@ -150,6 +154,113 @@ class DiaryDatabase {
         answer TEXT
       )
     ''');
+  }
+
+  static Future<void> _createWellbeingTables(DatabaseExecutor db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS wellbeing_questions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        text TEXT NOT NULL,
+        active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0, 1))
+      )
+    ''');
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS wellbeing_sessions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        created_at TEXT NOT NULL,
+        score INTEGER NOT NULL CHECK(score BETWEEN 0 AND 100)
+      )
+    ''');
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS wellbeing_answers (
+        session_id INTEGER NOT NULL,
+        question_text TEXT NOT NULL,
+        rating INTEGER NOT NULL CHECK(rating BETWEEN 0 AND 4),
+        FOREIGN KEY(session_id) REFERENCES wellbeing_sessions(id) ON DELETE CASCADE
+      )
+    ''');
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS app_preferences (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      )
+    ''');
+    // Начальные вопросы добавляются только при пустом списке.
+    final count = Sqflite.firstIntValue(await db.rawQuery(
+      'SELECT COUNT(*) FROM wellbeing_questions')) ?? 0;
+    if (count == 0) {
+      for (final q in defaultWellbeingQuestions) {
+        await db.insert('wellbeing_questions', {'text': q, 'active': 1});
+      }
+    }
+  }
+
+  Future<List<WellbeingQuestion>> getWellbeingQuestions({bool onlyActive = false}) async {
+    final db = await database;
+    final rows = await db.query('wellbeing_questions',
+      where: onlyActive ? 'active = 1' : null, orderBy: 'id ASC');
+    return rows.map(WellbeingQuestion.fromMap).toList();
+  }
+
+  Future<void> addWellbeingQuestion(String text) async {
+    if (text.trim().isEmpty) throw ArgumentError('Введите вопрос');
+    final db = await database;
+    await db.insert('wellbeing_questions', {'text': text.trim(), 'active': 1});
+  }
+
+  Future<void> setWellbeingQuestionActive(int id, bool active) async {
+    final db = await database;
+    await db.update('wellbeing_questions', {'active': active ? 1 : 0},
+      where: 'id = ?', whereArgs: [id]);
+  }
+
+  Future<void> deleteWellbeingQuestion(int id) async {
+    final db = await database;
+    await db.delete('wellbeing_questions', where: 'id = ?', whereArgs: [id]);
+  }
+
+  Future<void> saveWellbeingSession(Map<String, int> answers) async {
+    final db = await database;
+    final questions = await getWellbeingQuestions(onlyActive: true);
+    if (questions.isEmpty || answers.length != questions.length ||
+        questions.any((q) => !answers.containsKey(q.text))) {
+      throw ArgumentError('Нужно ответить на все активные вопросы');
+    }
+    for (final rating in answers.values) {
+      if (rating < 0 || rating > 4) throw ArgumentError('Оценка от 0 до 4');
+    }
+    final score = wellbeingScore(answers.values.toList());
+    await db.transaction((txn) async {
+      final id = await txn.insert('wellbeing_sessions', {
+        'created_at': DateTime.now().toIso8601String(), 'score': score,
+      });
+      for (final entry in answers.entries) {
+        await txn.insert('wellbeing_answers', {
+          'session_id': id, 'question_text': entry.key, 'rating': entry.value,
+        });
+      }
+    });
+  }
+
+  Future<List<WellbeingSession>> getWellbeingSessions() async {
+    final db = await database;
+    final rows = await db.query('wellbeing_sessions',
+      orderBy: 'created_at DESC, id DESC');
+    return rows.map(WellbeingSession.fromMap).toList();
+  }
+
+  Future<bool> promptsEnabled() async {
+    final db = await database;
+    final rows = await db.query('app_preferences', where: 'key = ?',
+      whereArgs: ['reflection_prompts'], limit: 1);
+    return rows.isEmpty || rows.first['value'] == '1';
+  }
+
+  Future<void> setPromptsEnabled(bool enabled) async {
+    final db = await database;
+    await db.insert('app_preferences',
+      {'key': 'reflection_prompts', 'value': enabled ? '1' : '0'},
+      conflictAlgorithm: ConflictAlgorithm.replace);
   }
 
   /// Дата сравнивается с локальным временем, записанным в ISO-8601.

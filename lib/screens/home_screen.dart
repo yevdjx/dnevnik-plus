@@ -8,6 +8,7 @@ import 'entry_editor.dart';
 import 'mood_history.dart';
 import 'search_screen.dart';
 import 'questions_screen.dart';
+import 'wellbeing_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -25,6 +26,8 @@ class _HomeScreenState extends State<HomeScreen> {
   bool loading = true;
   List<MoodLog> moodLogs = [];
   bool savingMood = false;
+  bool reflectionPromptsEnabled = true;
+  int promptIndex = 0;
 
   @override
   void initState() {
@@ -37,11 +40,13 @@ class _HomeScreenState extends State<HomeScreen> {
       final loadedEntries = await DiaryDatabase.instance.getEntries();
       final loadedArcs = await DiaryDatabase.instance.getArcs();
       final loadedMoods = await DiaryDatabase.instance.getMoodLogs();
+      final promptsOn = await DiaryDatabase.instance.promptsEnabled();
       if (!mounted) return;
       setState(() {
         entries = loadedEntries;
         arcs = loadedArcs;
         moodLogs = loadedMoods;
+        reflectionPromptsEnabled = promptsOn;
         loading = false;
       });
     } catch (error) {
@@ -191,6 +196,43 @@ class _HomeScreenState extends State<HomeScreen> {
               MaterialPageRoute(builder: (_) => const QuestionsScreen()));
             if (mounted) await reload();
           },
+        )),
+        Card(child: ListTile(
+          leading: const Icon(Icons.favorite_outline),
+          title: const Text('Самочувствие за неделю'),
+          subtitle: const Text('Опросник и история ответов'),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: () async {
+            await Navigator.push<void>(context,
+              MaterialPageRoute(builder: (_) => const WellbeingScreen()));
+            if (mounted) await reload();
+          },
+        )),
+        const SizedBox(height: 12),
+        if (reflectionPromptsEnabled) Card(child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            const Text('Вопрос для размышления',
+              style: TextStyle(fontSize: 17, fontWeight: FontWeight.w600)),
+            const SizedBox(height: 8),
+            Text(reflectionPromptForMood(moodLogs.isEmpty ? null : moodLogs.first.mood,
+              promptIndex)),
+            Row(children: [
+              TextButton.icon(onPressed: () => setState(() => promptIndex++),
+                icon: const Icon(Icons.skip_next), label: const Text('Другой вопрос')),
+              const Spacer(),
+              TextButton(onPressed: () async {
+                await DiaryDatabase.instance.setPromptsEnabled(false);
+                if (mounted) setState(() => reflectionPromptsEnabled = false);
+              }, child: const Text('Отключить')),
+            ]),
+          ]),
+        )) else Align(alignment: Alignment.centerLeft, child: TextButton.icon(
+          onPressed: () async {
+            await DiaryDatabase.instance.setPromptsEnabled(true);
+            if (mounted) setState(() => reflectionPromptsEnabled = true);
+          }, icon: const Icon(Icons.lightbulb_outline),
+          label: const Text('Включить вопросы для размышления'),
         )),
         const SizedBox(height: 28),
         const Text('Мои записи',

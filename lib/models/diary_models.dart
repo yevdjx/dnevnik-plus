@@ -139,3 +139,64 @@ class DelayedQuestion {
     id: row['id'] as int, question: row['question'] as String,
     dueAt: DateTime.parse(row['due_at'] as String), answer: row['answer'] as String?);
 }
+
+/// Авторские вопросы для самонаблюдения, не психометрическая методика.
+const defaultWellbeingQuestions = <String>[
+  'Насколько мне было спокойно на этой неделе?',
+  'Насколько хватало сил на повседневные дела?',
+  'Насколько я чувствовал(а) связь с близкими?',
+  'Насколько у меня было приятных моментов?',
+];
+
+/// Простая шкала 0–100, не клинический показатель.
+int wellbeingScore(List<int> ratings) {
+  if (ratings.isEmpty || ratings.any((x) => x < 0 || x > 4)) {
+    throw ArgumentError('Нужны оценки от 0 до 4');
+  }
+  final sum = ratings.reduce((a, b) => a + b);
+  return (sum * 100 / (ratings.length * 4)).round();
+}
+
+class WellbeingQuestion {
+  const WellbeingQuestion({required this.id, required this.text, required this.active});
+  final int id;
+  final String text;
+  final bool active;
+  factory WellbeingQuestion.fromMap(Map<String, Object?> row) => WellbeingQuestion(
+    id: row['id'] as int, text: row['text'] as String,
+    active: row['active'] == 1,
+  );
+}
+
+class WellbeingSession {
+  const WellbeingSession({required this.id, required this.createdAt, required this.score});
+  final int id;
+  final DateTime createdAt;
+  final int score;
+  factory WellbeingSession.fromMap(Map<String, Object?> row) => WellbeingSession(
+    id: row['id'] as int, createdAt: DateTime.parse(row['created_at'] as String),
+    score: row['score'] as int,
+  );
+}
+
+/// Офлайн-подсказки. Ничего не анализирует и не отправляет в сеть.
+String reflectionPromptForMood(int? mood, int index) {
+  final gentle = <String>[
+    'Что сейчас помогло бы тебе почувствовать себя спокойнее?',
+    'Было ли сегодня что-то, за что ты можешь себя поблагодарить?',
+    'Что ты хочешь оставить в этом дне, а что взять с собой дальше?',
+  ];
+  final bright = <String>[
+    'Что сегодня принесло тебе радость?',
+    'С кем тебе хотелось бы поделиться хорошим моментом?',
+    'Что из сегодняшнего дня хотелось бы запомнить?',
+  ];
+  final neutral = <String>[
+    'Что было самым заметным событием дня?',
+    'Какое чувство было труднее всего назвать?',
+    'Что ты узнала о себе сегодня?',
+  ];
+  final prompts = mood != null && mood <= 1 ? gentle :
+    mood != null && mood >= 3 ? bright : neutral;
+  return prompts[index % prompts.length];
+}
