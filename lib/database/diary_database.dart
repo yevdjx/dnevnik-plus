@@ -1,5 +1,6 @@
-import 'package:path/path.dart' show join;
-import 'package:sqflite/sqflite.dart';
+import 'package:sqflite_sqlcipher/sqflite.dart';
+
+import '../security/encrypted_database.dart';
 
 import '../models/diary_models.dart';
 
@@ -8,13 +9,19 @@ class DiaryDatabase {
 
   static final DiaryDatabase instance = DiaryDatabase._();
   Database? _database;
+  Future<Database>? _opening;
 
   Future<Database> get database async {
-    if (_database != null) return _database!;
+    if (_database != null && _database!.isOpen) return _database!;
+    return _opening ??= _openWithSchema().whenComplete(() => _opening = null);
+  }
 
-    final directory = await getDatabasesPath();
-    _database = await openDatabase(
-      join(directory, 'diary.db'), // Та же БД, что и в версии 0.1
+  Future<Database> _openWithSchema() async {
+    final locator = EncryptedDatabase.instance;
+    final location = await locator.activeDatabase();
+    final db = await openDatabase(
+      location.path,
+      password: location.password,
       version: 6,
       onConfigure: (db) async {
         await db.execute('PRAGMA foreign_keys = ON');
@@ -36,25 +43,32 @@ class DiaryDatabase {
         await _createWellbeingTables(db);
       },
       onUpgrade: (db, oldVersion, newVersion) async {
-        if (oldVersion < 2) {
-          // Не трогаем entries: уже существующие записи сохранятся.
-          await _createArcTables(db);
-        }
-        if (oldVersion < 3) {
-          await _createMoodTable(db);
-        }
-        if (oldVersion < 4) {
-          await _createMotifContextTables(db);
-        }
-        if (oldVersion < 5) {
-          await _createReflectionTables(db);
-        }
-        if (oldVersion < 6) {
-          await _createWellbeingTables(db);
-        }
+        if (oldVersion < 2) await _createArcTables(db);
+        if (oldVersion < 3) await _createMoodTable(db);
+        if (oldVersion < 4) await _createMotifContextTables(db);
+        if (oldVersion < 5) await _createReflectionTables(db);
+        if (oldVersion < 6) await _createWellbeingTables(db);
       },
     );
-    return _database!;
+    _database = db;
+    return db;
+  }
+
+  /// Manually triggered from security settings after a local backup.
+  /// Does not delete the old plaintext diary.db.
+  Future<MigrationReport> enableEncryption() async {
+    if (_opening != null) await _opening;
+    if (_database != null && _database!.isOpen) {
+      await _database!.close();
+      _database = null;
+    }
+    try {
+      return await EncryptedDatabase.instance.migrate();
+    } finally {
+      // Next request opens the encrypted database after successful migration.
+      _database = null;
+      _opening = null;
+    }
   }
 
   static Future<void> _createArcTables(DatabaseExecutor db) async {

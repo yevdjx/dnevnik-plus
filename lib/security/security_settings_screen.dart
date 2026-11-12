@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 
 import 'pin_security.dart';
+import '../database/diary_database.dart';
+import 'encrypted_database.dart';
 
 class SecuritySettingsScreen extends StatefulWidget {
   const SecuritySettingsScreen({super.key});
@@ -15,6 +17,67 @@ class _SecuritySettingsScreenState extends State<SecuritySettingsScreen> {
   final confirm = TextEditingController();
   bool busy = false;
   String? error;
+  bool migrating = false;
+  bool? encrypted;
+
+  @override
+  void initState() {
+    super.initState();
+    _checkEncryption();
+  }
+
+  Future<void> _checkEncryption() async {
+    try {
+      final enabled = await EncryptedDatabase.instance.enabled;
+      if (mounted) setState(() => encrypted = enabled);
+    } catch (e) {
+      if (mounted) setState(() => error = 'Ошибка проверки базы: $e');
+    }
+  }
+
+  Future<void> _encrypt() async {
+    if (migrating || encrypted != false) return;
+    if (!PinSecurity.instance.enabled) {
+      setState(() => error = 'Сначала установи PIN');
+      return;
+    }
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Создать зашифрованную копию?'),
+        content: const Text(
+          'Перед продолжением сделай резервную копию базы вне эмулятора. '
+          'Исходная НЕЗАШИФРОВАННАЯ diary.db останется на устройстве '
+          'для восстановления. Новые записи после переноса пойдут в '
+          'зашифрованную базу. Ключ хранится в Android Keystore через '
+          'flutter_secure_storage. Потеря ключа означает потерю доступа '
+          'к новой базе. Это тестовая миграция, не финальная защита.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Отмена')),
+          FilledButton(onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Копия сделана')),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    setState(() { migrating = true; error = null; });
+    try {
+      final report = await DiaryDatabase.instance.enableEncryption();
+      if (!mounted) return;
+      setState(() => encrypted = true);
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('Экспорт проверен: ${report.tableCount} таблиц, '
+          '${report.totalRows} строк. Перезапусти приложение.'),
+      ));
+    } catch (e) {
+      if (mounted) setState(() => error =
+        'Шифрование не завершено: $e. Не удаляй старую базу.');
+    } finally {
+      if (mounted) setState(() => migrating = false);
+    }
+  }
+
 
   @override
   void dispose() {
@@ -63,8 +126,8 @@ class _SecuritySettingsScreenState extends State<SecuritySettingsScreen> {
           style: Theme.of(context).textTheme.titleLarge),
         const SizedBox(height: 12),
         const Text('PIN ограничивает доступ через интерфейс приложения. '
-          'Сама база SQLite пока НЕ зашифрована. '
-          'Не храни здесь настоящие личные записи до внедрения шифрования.'),
+          'Шифрование базы настраивается ниже. '
+          'Не храни настоящие личные записи до полной проверки защиты.'),
         const SizedBox(height: 20),
         if (enabled) ...[
           TextField(controller: oldPin, obscureText: true,
@@ -88,6 +151,25 @@ class _SecuritySettingsScreenState extends State<SecuritySettingsScreen> {
         FilledButton.icon(onPressed: busy ? null : _save,
           icon: const Icon(Icons.lock),
           label: Text(busy ? 'Сохранение...' : 'Сохранить PIN')),
+        const Divider(height: 40),
+        Text('Шифрование SQLite (экспериментально)',
+          style: Theme.of(context).textTheme.titleLarge),
+        const SizedBox(height: 8),
+        Text(encrypted == null ? 'Проверяем статус...' :
+          encrypted! ? 'Зашифрованная база активна. ВНИМАНИЕ: старая '
+              'незашифрованная diary.db пока осталась на устройстве.' :
+              'Пока используется обычная SQLite без шифрования.'),
+        const SizedBox(height: 12),
+        FilledButton.icon(
+          onPressed: migrating || encrypted != false || !enabled ? null : _encrypt,
+          icon: const Icon(Icons.shield_outlined),
+          label: Text(migrating ? 'Экспорт и проверка...' :
+            encrypted == true ? 'SQLCipher активен' :
+            'Создать зашифрованную копию'),
+        ),
+        const Text('Тестовая v0.8. Оригинал не удаляется автоматически. '
+          'PIN блокирует интерфейс, но не является ключом SQLCipher.'),
+        const SizedBox(height: 12),
         if (enabled) TextButton.icon(
           onPressed: () {
             PinSecurity.instance.lock();
