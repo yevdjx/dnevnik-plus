@@ -7,6 +7,7 @@ import 'entry_detail.dart';
 import 'entry_editor.dart';
 import 'mood_history.dart';
 import 'search_screen.dart';
+import 'questions_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -179,6 +180,18 @@ class _HomeScreenState extends State<HomeScreen> {
             onTap: openMoodHistory,
           ),
         ),
+        const SizedBox(height: 12),
+        Card(child: ListTile(
+          leading: const Icon(Icons.schedule),
+          title: const Text('Отложенные вопросы'),
+          subtitle: const Text('Вопросы к себе на будущее'),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: () async {
+            await Navigator.push<void>(context,
+              MaterialPageRoute(builder: (_) => const QuestionsScreen()));
+            if (mounted) await reload();
+          },
+        )),
         const SizedBox(height: 28),
         const Text('Мои записи',
             style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),

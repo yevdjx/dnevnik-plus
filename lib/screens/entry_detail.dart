@@ -16,6 +16,7 @@ class _EntryDetailState extends State<EntryDetail> {
   List<String> motifNames = [];
   EntryContext entryContext = const EntryContext();
   bool metadataLoading = true;
+  List<EntryComment> comments = [];
 
   @override
   void initState() {
@@ -28,14 +29,53 @@ class _EntryDetailState extends State<EntryDetail> {
       final ids = await DiaryDatabase.instance.getEntryMotifIds(widget.entry.id);
       final motifs = await DiaryDatabase.instance.getMotifs();
       final ctx = await DiaryDatabase.instance.getEntryContext(widget.entry.id);
+      final loadedComments = await DiaryDatabase.instance.getComments(widget.entry.id);
       if (!mounted) return;
       setState(() {
         motifNames = motifs.where((m) => ids.contains(m.id)).map((m) => m.name).toList();
         entryContext = ctx;
+        comments = loadedComments;
         metadataLoading = false;
       });
     } catch (_) {
       if (mounted) setState(() => metadataLoading = false);
+    }
+  }
+
+  Future<void> addComment() async {
+    final controller = TextEditingController();
+    final text = await showDialog<String>(context: context, builder: (dialogContext) => AlertDialog(
+      title: const Text('Новый комментарий'),
+      content: TextField(controller: controller, maxLines: 4,
+          decoration: const InputDecoration(hintText: 'Что ты думаешь об этом сейчас?')),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Отмена')),
+        FilledButton(onPressed: () => Navigator.pop(dialogContext, controller.text), child: const Text('Добавить')),
+      ],
+    ));
+    if (!mounted || text == null || text.trim().isEmpty) return;
+    try {
+      await DiaryDatabase.instance.addComment(widget.entry.id, text);
+      await loadMetadata();
+    } catch (error) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Ошибка: $error')));
+    }
+  }
+
+  Future<void> freeze() async {
+    final now = DateTime.now();
+    final selected = await showDatePicker(context: context,
+      initialDate: now.add(const Duration(days: 1)),
+      firstDate: DateTime(now.year, now.month, now.day + 1),
+      lastDate: DateTime(now.year + 30));
+    if (selected == null || !mounted) return;
+    try {
+      await DiaryDatabase.instance.setVisibility(widget.entry.id, 'frozen', selected);
+      if (mounted) Navigator.pop(context, true);
+    } catch (error) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Ошибка: $error')));
     }
   }
 
@@ -92,6 +132,8 @@ class _EntryDetailState extends State<EntryDetail> {
       appBar: AppBar(
         title: const Text('Запись'),
         actions: [
+          IconButton(tooltip: 'Заморозить', onPressed: freeze,
+              icon: const Icon(Icons.ac_unit)),
           IconButton(
             tooltip: 'Редактировать',
             onPressed: () => edit(context),
@@ -128,6 +170,23 @@ class _EntryDetailState extends State<EntryDetail> {
           if (entryContext.people.isNotEmpty) Text('Люди рядом: ${entryContext.people}'),
           if (entryContext.atmosphere.isNotEmpty) Text('Атмосфера: ${entryContext.atmosphere}'),
           if (entryContext.lifePeriod.isNotEmpty) Text('Период жизни: ${entryContext.lifePeriod}'),
+          const SizedBox(height: 24),
+          const Text('Комментарии к записи',
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+          const Text('Исходный текст при комментировании не меняется.'),
+          for (final comment in comments)
+            Card(child: ListTile(
+              title: Text(comment.content),
+              subtitle: Text('${comment.createdAt.day}.${comment.createdAt.month}.${comment.createdAt.year}'),
+              trailing: IconButton(icon: const Icon(Icons.delete_outline),
+                onPressed: () async {
+                  await DiaryDatabase.instance.deleteComment(comment.id);
+                  await loadMetadata();
+                }),
+            )),
+          OutlinedButton.icon(onPressed: addComment,
+              icon: const Icon(Icons.add_comment_outlined),
+              label: const Text('Добавить комментарий')),
         ],
       ),
     );

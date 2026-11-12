@@ -102,3 +102,40 @@ class EntryFilters {
   final DateTime? to;
   final String contextText;
 }
+
+class EntryVisibility {
+  const EntryVisibility({required this.entryId, required this.kind, required this.visibleAt});
+  final int entryId;
+  final String kind;
+  final DateTime visibleAt;
+  factory EntryVisibility.fromMap(Map<String, Object?> row) => EntryVisibility(
+    entryId: row['entry_id'] as int, kind: row['kind'] as String,
+    visibleAt: DateTime.parse(row['visible_at'] as String));
+}
+
+class EntryComment {
+  const EntryComment({required this.id, required this.entryId,
+      required this.content, required this.createdAt});
+  final int id;
+  final int entryId;
+  final String content;
+  final DateTime createdAt;
+  factory EntryComment.fromMap(Map<String, Object?> row) => EntryComment(
+    id: row['id'] as int, entryId: row['entry_id'] as int,
+    content: row['content'] as String,
+    createdAt: DateTime.parse(row['created_at'] as String));
+}
+
+class DelayedQuestion {
+  const DelayedQuestion({required this.id, required this.question,
+      required this.dueAt, this.answer});
+  final int id;
+  final String question;
+  final DateTime dueAt;
+  final String? answer;
+  bool get due => !dueAt.isAfter(DateTime.now());
+  bool get answered => answer != null;
+  factory DelayedQuestion.fromMap(Map<String, Object?> row) => DelayedQuestion(
+    id: row['id'] as int, question: row['question'] as String,
+    dueAt: DateTime.parse(row['due_at'] as String), answer: row['answer'] as String?);
+}

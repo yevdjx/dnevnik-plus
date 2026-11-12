@@ -29,6 +29,8 @@ class _EntryEditorState extends State<EntryEditor> {
   Set<int> selectedArcIds = {};
   bool isLoading = true;
   bool isSaving = false;
+  String? visibilityKind;
+  DateTime? visibleAt;
 
   @override
   void initState() {
@@ -48,6 +50,8 @@ class _EntryEditorState extends State<EntryEditor> {
       final loadedMotifs = await DiaryDatabase.instance.getMotifs();
       final motifIds = widget.entry == null ? <int>{} :
           await DiaryDatabase.instance.getEntryMotifIds(widget.entry!.id);
+      final visibility = widget.entry == null ? null :
+          await DiaryDatabase.instance.getVisibility(widget.entry!.id);
       final contextData = widget.entry == null ? const EntryContext() :
           await DiaryDatabase.instance.getEntryContext(widget.entry!.id);
       if (!mounted) return;
@@ -58,6 +62,8 @@ class _EntryEditorState extends State<EntryEditor> {
       periodController.text = contextData.lifePeriod;
       setState(() {
         motifs = loadedMotifs;
+        visibilityKind = visibility?.kind;
+        visibleAt = visibility?.visibleAt;
         selectedMotifIds = motifIds;
         arcs = loadedArcs;
         selectedArcIds = ids;
@@ -102,6 +108,8 @@ class _EntryEditorState extends State<EntryEditor> {
         mood: selectedMood,
         arcIds: selectedArcIds,
         motifIds: selectedMotifIds,
+        visibilityKind: visibilityKind,
+        visibleAt: visibleAt,
         entryContext: EntryContext(
           place: placeController.text, timeOfDay: timeController.text,
           people: peopleController.text, atmosphere: atmosphereController.text,
@@ -264,6 +272,41 @@ class _EntryEditorState extends State<EntryEditor> {
               contextField(atmosphereController, 'Атмосфера / погода'),
               contextField(periodController, 'Период жизни'),
               const SizedBox(height: 10),
+              const Text('Доступ к записи', style: TextStyle(fontSize: 17)),
+              const SizedBox(height: 8),
+              DropdownButtonFormField<String>(
+                initialValue: visibilityKind ?? 'normal',
+                decoration: const InputDecoration(border: OutlineInputBorder()),
+                items: const [
+                  DropdownMenuItem(value: 'normal', child: Text('Обычная запись')),
+                  DropdownMenuItem(value: 'future', child: Text('Письмо в будущее')),
+                  DropdownMenuItem(value: 'frozen', child: Text('Заморозить до даты')),
+                ],
+                onChanged: (value) => setState(() {
+                  visibilityKind = value == 'normal' ? null : value;
+                  if (visibilityKind == null) visibleAt = null;
+                }),
+              ),
+              if (visibilityKind != null) ...[
+                const SizedBox(height: 8),
+                OutlinedButton.icon(
+                  icon: const Icon(Icons.event),
+                  label: Text(visibleAt == null ? 'Выбрать дату открытия'
+                      : 'Открыть ${visibleAt!.day}.${visibleAt!.month}.${visibleAt!.year}'),
+                  onPressed: () async {
+                    final now = DateTime.now();
+                    final picked = await showDatePicker(
+                      context: context, initialDate: visibleAt ?? now.add(const Duration(days: 1)),
+                      firstDate: DateTime(now.year, now.month, now.day + 1),
+                      lastDate: DateTime(now.year + 30),
+                    );
+                    if (picked != null && mounted) setState(() => visibleAt = picked);
+                  },
+                ),
+                const Text('Это скрытие в приложении, а не шифрование.',
+                    style: TextStyle(fontSize: 12)),
+              ],
+              const SizedBox(height: 16),
               const Text('Текст записи', style: TextStyle(fontSize: 17)),
               const SizedBox(height: 8),
               TextField(

@@ -15,7 +15,7 @@ class DiaryDatabase {
     final directory = await getDatabasesPath();
     _database = await openDatabase(
       join(directory, 'diary.db'), // Та же БД, что и в версии 0.1
-      version: 4,
+      version: 5,
       onConfigure: (db) async {
         await db.execute('PRAGMA foreign_keys = ON');
       },
@@ -32,6 +32,7 @@ class DiaryDatabase {
         await _createArcTables(db);
         await _createMoodTable(db);
         await _createMotifContextTables(db);
+        await _createReflectionTables(db);
       },
       onUpgrade: (db, oldVersion, newVersion) async {
         if (oldVersion < 2) {
@@ -43,6 +44,9 @@ class DiaryDatabase {
         }
         if (oldVersion < 4) {
           await _createMotifContextTables(db);
+        }
+        if (oldVersion < 5) {
+          await _createReflectionTables(db);
         }
       },
     );
@@ -118,6 +122,119 @@ class DiaryDatabase {
     ''');
   }
 
+  static Future<void> _createReflectionTables(DatabaseExecutor db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS entry_visibility (
+        entry_id INTEGER PRIMARY KEY,
+        kind TEXT NOT NULL CHECK(kind IN ('future', 'frozen')),
+        visible_at TEXT NOT NULL,
+        FOREIGN KEY (entry_id) REFERENCES entries(id) ON DELETE CASCADE
+      )
+    ''');
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS entry_comments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        entry_id INTEGER NOT NULL,
+        content TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (entry_id) REFERENCES entries(id) ON DELETE CASCADE
+      )
+    ''');
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS delayed_questions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        question TEXT NOT NULL,
+        due_at TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        answered_at TEXT,
+        answer TEXT
+      )
+    ''');
+  }
+
+  /// Дата сравнивается с локальным временем, записанным в ISO-8601.
+  /// Это скрытие в интерфейсе, не криптографическая защита.
+  Future<void> setVisibility(int entryId, String? kind, DateTime? date) async {
+    final db = await database;
+    if (kind == null) {
+      await db.delete('entry_visibility', where: 'entry_id = ?', whereArgs: [entryId]);
+      return;
+    }
+    if (kind != 'future' && kind != 'frozen') throw ArgumentError('Неверный тип');
+    if (date == null || !date.isAfter(DateTime.now())) {
+      throw ArgumentError('Выбери дату в будущем');
+    }
+    await db.insert('entry_visibility', {
+      'entry_id': entryId, 'kind': kind, 'visible_at': date.toIso8601String(),
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
+  Future<EntryVisibility?> getVisibility(int entryId) async {
+    final db = await database;
+    final rows = await db.query('entry_visibility', where: 'entry_id = ?',
+        whereArgs: [entryId], limit: 1);
+    return rows.isEmpty ? null : EntryVisibility.fromMap(rows.first);
+  }
+
+  Future<List<EntryComment>> getComments(int entryId) async {
+    final db = await database;
+    final rows = await db.query('entry_comments', where: 'entry_id = ?',
+        whereArgs: [entryId], orderBy: 'created_at ASC, id ASC');
+    return rows.map(EntryComment.fromMap).toList();
+  }
+
+  Future<void> addComment(int entryId, String text) async {
+    if (text.trim().isEmpty) throw ArgumentError('Пустой комментарий');
+    final db = await database;
+    await db.insert('entry_comments', {
+      'entry_id': entryId, 'content': text.trim(),
+      'created_at': DateTime.now().toIso8601String(),
+    });
+  }
+
+  Future<void> deleteComment(int id) async {
+    final db = await database;
+    await db.delete('entry_comments', where: 'id = ?', whereArgs: [id]);
+  }
+
+  Future<List<DelayedQuestion>> getQuestions() async {
+    final db = await database;
+    final rows = await db.query('delayed_questions', orderBy: 'due_at ASC, id ASC');
+    return rows.map(DelayedQuestion.fromMap).toList();
+  }
+
+  Future<void> saveQuestion({int? id, required String question,
+      required DateTime dueAt, String? answer}) async {
+    if (question.trim().isEmpty) throw ArgumentError('Введи вопрос');
+    final db = await database;
+    final row = <String, Object?>{
+      'question': question.trim(), 'due_at': dueAt.toIso8601String(),
+    };
+    if (id == null) {
+      row['created_at'] = DateTime.now().toIso8601String();
+      await db.insert('delayed_questions', row);
+    } else {
+      await db.update('delayed_questions', row, where: 'id = ?', whereArgs: [id]);
+    }
+  }
+
+  Future<void> answerQuestion(int id, String answer) async {
+    if (answer.trim().isEmpty) throw ArgumentError('Введи ответ');
+    final db = await database;
+    await db.update('delayed_questions', {
+      'answer': answer.trim(), 'answered_at': DateTime.now().toIso8601String(),
+    }, where: 'id = ?', whereArgs: [id]);
+  }
+
+  Future<void> deleteQuestion(int id) async {
+    final db = await database;
+    await db.delete('delayed_questions', where: 'id = ?', whereArgs: [id]);
+  }
+
+  String get _accessiblePredicate =>
+      "NOT EXISTS (SELECT 1 FROM entry_visibility v WHERE v.entry_id = e.id "
+      "AND v.visible_at > ?)";
+
   Future<List<DiaryMotif>> getMotifs() async {
     final db = await database;
     final rows = await db.query('motifs', orderBy: 'name COLLATE NOCASE');
@@ -190,7 +307,9 @@ class DiaryDatabase {
       final pattern = '%${filters.contextText.trim()}%';
       args.addAll(List.filled(5, pattern));
     }
-    final where = conditions.isEmpty ? '' : 'WHERE ${conditions.join(' AND ')}';
+    conditions.add(_accessiblePredicate);
+    args.add(DateTime.now().toIso8601String());
+    final where = 'WHERE ${conditions.join(' AND ')}';
     final rows = await db.rawQuery('''
       SELECT e.* FROM entries e $where
       ORDER BY e.created_at DESC, e.id DESC
@@ -224,14 +343,17 @@ class DiaryDatabase {
     final db = await database;
     final List<Map<String, Object?>> rows;
     if (arcId == null) {
-      rows = await db.query('entries', orderBy: 'created_at DESC, id DESC');
+      rows = await db.rawQuery('''
+        SELECT e.* FROM entries e WHERE $_accessiblePredicate
+        ORDER BY e.created_at DESC, e.id DESC
+      ''', [DateTime.now().toIso8601String()]);
     } else {
       rows = await db.rawQuery('''
         SELECT e.* FROM entries e
         INNER JOIN entry_arcs ea ON ea.entry_id = e.id
-        WHERE ea.arc_id = ?
+        WHERE ea.arc_id = ? AND $_accessiblePredicate
         ORDER BY e.created_at DESC, e.id DESC
-      ''', [arcId]);
+      ''', [arcId, DateTime.now().toIso8601String()]);
     }
     return rows.map(DiaryEntry.fromMap).toList();
   }
@@ -242,6 +364,7 @@ class DiaryDatabase {
       SELECT a.id, a.name, COUNT(ea.entry_id) AS entry_count
       FROM arcs a
       LEFT JOIN entry_arcs ea ON ea.arc_id = a.id
+        AND NOT EXISTS (SELECT 1 FROM entry_visibility v WHERE v.entry_id = ea.entry_id AND v.visible_at > '${DateTime.now().toIso8601String()}')
       GROUP BY a.id, a.name
       ORDER BY a.name COLLATE NOCASE
     ''');
@@ -278,6 +401,8 @@ class DiaryDatabase {
     required Set<int> arcIds,
     Set<int> motifIds = const {},
     EntryContext entryContext = const EntryContext(),
+    String? visibilityKind,
+    DateTime? visibleAt,
   }) async {
     final db = await database;
     await db.transaction((txn) async {
@@ -309,6 +434,19 @@ class DiaryDatabase {
       }
       await txn.insert('entry_context', entryContext.toMap(entryId),
           conflictAlgorithm: ConflictAlgorithm.replace);
+      // При редактировании сохраняем прежнюю заморозку, если не передано
+      // явное изменение; редактор всегда передаёт актуальное состояние.
+      if (visibilityKind != null) {
+        if (visibleAt == null || !visibleAt.isAfter(DateTime.now())) {
+          throw ArgumentError('Дата открытия должна быть в будущем');
+        }
+        await txn.insert('entry_visibility', {
+          'entry_id': entryId, 'kind': visibilityKind,
+          'visible_at': visibleAt.toIso8601String(),
+        }, conflictAlgorithm: ConflictAlgorithm.replace);
+      } else {
+        await txn.delete('entry_visibility', where: 'entry_id = ?', whereArgs: [entryId]);
+      }
       for (final arcId in arcIds) {
         await txn.insert('entry_arcs', {
           'entry_id': entryId,
