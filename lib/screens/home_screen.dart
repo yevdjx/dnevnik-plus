@@ -9,6 +9,7 @@ import 'mood_history.dart';
 import 'search_screen.dart';
 import 'questions_screen.dart';
 import 'wellbeing_screen.dart';
+import '../security/security_settings_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -293,6 +294,10 @@ class _HomeScreenState extends State<HomeScreen> {
     return Scaffold(
       appBar: AppBar(title: const Text('Дневник+'), centerTitle: true,
         actions: [IconButton(
+          tooltip: 'Безопасность', icon: const Icon(Icons.lock_outline),
+          onPressed: () => Navigator.push<void>(context,
+            MaterialPageRoute(builder: (_) => const SecuritySettingsScreen())),
+        ), IconButton(
           tooltip: 'Поиск', icon: const Icon(Icons.search),
           onPressed: () async {
             await Navigator.push<void>(context,
