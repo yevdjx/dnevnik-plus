@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 class DiaryEntry {
   const DiaryEntry({
     required this.id,
@@ -199,4 +201,45 @@ String reflectionPromptForMood(int? mood, int index) {
   final prompts = mood != null && mood <= 1 ? gentle :
     mood != null && mood >= 3 ? bright : neutral;
   return prompts[index % prompts.length];
+}
+
+/// An image attached to an entry. Bytes are stored in the SQLCipher database.
+class DiaryImage {
+  const DiaryImage({required this.id, required this.entryId, required this.bytes});
+  final int id;
+  final int entryId;
+  final Uint8List bytes;
+
+  factory DiaryImage.fromMap(Map<String, Object?> map) => DiaryImage(
+    id: map['id'] as int,
+    entryId: map['entry_id'] as int,
+    bytes: map['data'] as Uint8List,
+  );
+}
+
+
+/// Audio/video captured or selected by the user. Payload stored in SQLCipher.
+class DiaryMedia {
+  const DiaryMedia({required this.id, required this.entryId, required this.kind,
+    required this.bytes, required this.mime});
+  final int id;
+  final int entryId;
+  final String kind; // audio | video
+  final String mime;
+  final Uint8List bytes;
+
+  factory DiaryMedia.fromMap(Map<String, Object?> row) => DiaryMedia(
+    id: row['id'] as int,
+    entryId: row['entry_id'] as int,
+    kind: row['kind'] as String,
+    mime: row['mime'] as String,
+    bytes: row['data'] as Uint8List,
+  );
+}
+
+class NewDiaryMedia {
+  const NewDiaryMedia({required this.kind, required this.bytes, required this.mime});
+  final String kind;
+  final Uint8List bytes;
+  final String mime;
 }

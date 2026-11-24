@@ -1,3 +1,10 @@
+import 'dart:typed_data';
+import 'dart:async';
+import 'package:record/record.dart';
+import '../services/wav_encoder.dart';
+import '../widgets/media_viewer.dart';
+
+import 'package:image_picker/image_picker.dart';
 import 'package:flutter/material.dart';
 
 import '../database/diary_database.dart';
@@ -31,6 +38,20 @@ class _EntryEditorState extends State<EntryEditor> {
   bool isSaving = false;
   String? visibilityKind;
   DateTime? visibleAt;
+  final List<Uint8List> pendingImages = [];
+  final Set<int> removedImageIds = {};
+  List<DiaryImage> savedImages = [];
+  bool pickingImage = false;
+  bool pickingMedia = false;
+  bool isRecording = false;
+  final AudioRecorder _recorder = AudioRecorder();
+  StreamSubscription<Uint8List>? _pcmSubscription;
+  final BytesBuilder _pcmBuffer = BytesBuilder(copy: false);
+  bool _recordTooLarge = false;
+  final List<NewDiaryMedia> pendingMedia = [];
+  final Set<int> removedMediaIds = {};
+  List<DiaryMedia> savedMedia = [];
+
 
   @override
   void initState() {
@@ -54,6 +75,12 @@ class _EntryEditorState extends State<EntryEditor> {
           await DiaryDatabase.instance.getVisibility(widget.entry!.id);
       final contextData = widget.entry == null ? const EntryContext() :
           await DiaryDatabase.instance.getEntryContext(widget.entry!.id);
+      final existingMedia = widget.entry == null
+          ? <DiaryMedia>[]
+          : await DiaryDatabase.instance.getEntryMedia(widget.entry!.id);
+      final existingImages = widget.entry == null
+          ? <DiaryImage>[]
+          : await DiaryDatabase.instance.getEntryImages(widget.entry!.id);
       if (!mounted) return;
       placeController.text = contextData.place;
       timeController.text = contextData.timeOfDay;
@@ -61,6 +88,8 @@ class _EntryEditorState extends State<EntryEditor> {
       atmosphereController.text = contextData.atmosphere;
       periodController.text = contextData.lifePeriod;
       setState(() {
+        savedImages = existingImages;
+        savedMedia = existingMedia;
         motifs = loadedMotifs;
         visibilityKind = visibility?.kind;
         visibleAt = visibility?.visibleAt;
@@ -80,6 +109,9 @@ class _EntryEditorState extends State<EntryEditor> {
 
   @override
   void dispose() {
+    _pcmSubscription?.cancel();
+    if (isRecording) { _recorder.stop(); }
+    _recorder.dispose();
     titleController.dispose();
     contentController.dispose();
     placeController.dispose();
@@ -91,6 +123,7 @@ class _EntryEditorState extends State<EntryEditor> {
   }
 
   Future<void> save() async {
+    if (isRecording) { _message("Останови запись голоса перед сохранением"); return; }
     final title = titleController.text.trim();
     final content = contentController.text.trim();
     if (title.isEmpty || content.isEmpty) {
@@ -110,6 +143,10 @@ class _EntryEditorState extends State<EntryEditor> {
         motifIds: selectedMotifIds,
         visibilityKind: visibilityKind,
         visibleAt: visibleAt,
+        newImages: pendingImages,
+        removedImageIds: removedImageIds,
+        newMedia: pendingMedia,
+        removedMediaIds: removedMediaIds,
         entryContext: EntryContext(
           place: placeController.text, timeOfDay: timeController.text,
           people: peopleController.text, atmosphere: atmosphereController.text,
@@ -126,6 +163,154 @@ class _EntryEditorState extends State<EntryEditor> {
       );
     }
   }
+
+  Future<void> pickImage() async {
+    if (pickingImage || isSaving) return;
+    if (savedImages.length - removedImageIds.length + pendingImages.length >= 5) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Максимум 5 фотографий на запись'),
+      ));
+      return;
+    }
+    setState(() => pickingImage = true);
+    try {
+      final picked = await ImagePicker().pickImage(
+        source: ImageSource.gallery,
+        maxWidth: 1600,
+        imageQuality: 80,
+      );
+      if (picked == null) return;
+      final bytes = await picked.readAsBytes();
+      if (bytes.lengthInBytes > 5 * 1024 * 1024) {
+        throw StateError('Фото слишком большое (максимум 5 МБ)');
+      }
+      if (!mounted) return;
+      setState(() => pendingImages.add(bytes));
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Не получилось выбрать фото: $error')),
+      );
+    } finally {
+      if (mounted) setState(() => pickingImage = false);
+    }
+  }
+
+  Future<void> selectPhotoOrCamera(ImageSource source) async {
+    if (pickingImage || isSaving) return;
+    if (savedImages.length - removedImageIds.length + pendingImages.length >= 5) {
+      _message('Максимум пять фотографий'); return;
+    }
+    setState(() => pickingImage = true);
+    try {
+      final selected = await ImagePicker().pickImage(
+          source: source, maxWidth: 1600, imageQuality: 80);
+      if (selected == null) return;
+      final bytes = await selected.readAsBytes();
+      if (bytes.lengthInBytes > 5 * 1024 * 1024) throw StateError('Фото больше 5 МБ');
+      if (mounted) setState(() => pendingImages.add(bytes));
+    } catch (error) { _message('Ошибка фотографии: $error'); }
+    finally { if (mounted) setState(() => pickingImage = false); }
+  }
+
+  void _message(String message) {
+    if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(message)));
+  }
+
+  Future<void> selectVideo(ImageSource source) async {
+    if (pickingMedia || isSaving || isRecording) return;
+    if (savedMedia.length - removedMediaIds.length + pendingMedia.length >= 5) {
+      _message('Максимум пять аудио и видео'); return;
+    }
+    setState(() => pickingMedia = true);
+    try {
+      final selected = await ImagePicker().pickVideo(
+        source: source, maxDuration: const Duration(seconds: 30));
+      if (selected == null) return;
+      // maxDuration affects camera recording, not pre-existing gallery videos.
+      final bytes = await selected.readAsBytes();
+      if (bytes.isEmpty || bytes.lengthInBytes > 20 * 1024 * 1024) {
+        throw StateError('Выбери видео размером до 20 МБ');
+      }
+      if (mounted) setState(() => pendingMedia.add(NewDiaryMedia(
+        kind: 'video', bytes: bytes, mime: 'video/mp4')));
+    } catch (error) { _message('Ошибка видео: $error'); }
+    finally { if (mounted) setState(() => pickingMedia = false); }
+  }
+
+  Future<void> startRecording() async {
+    if (isSaving || isRecording || pickingMedia) return;
+    if (savedMedia.length - removedMediaIds.length + pendingMedia.length >= 5) {
+      _message('Максимум пять аудио и видео'); return;
+    }
+    try {
+      if (!await _recorder.hasPermission()) { _message('Нет доступа к микрофону'); return; }
+      _pcmBuffer.clear();
+      _recordTooLarge = false;
+      final stream = await _recorder.startStream(const RecordConfig(
+        encoder: AudioEncoder.pcm16bits, sampleRate: 16000, numChannels: 1));
+      _pcmSubscription = stream.listen((chunk) {
+        if (_pcmBuffer.length + chunk.length > 5 * 1024 * 1024 - 44) {
+          _recordTooLarge = true;
+          stopRecording();
+        } else { _pcmBuffer.add(chunk); }
+      }, onError: (Object error) => _message('Ошибка микрофона: $error'));
+      if (mounted) setState(() => isRecording = true);
+    } catch (error) { _message('Не удалось начать запись: $error'); }
+  }
+
+  Future<void> stopRecording() async {
+    if (!isRecording) return;
+    setState(() => isRecording = false);
+    try {
+      await _recorder.stop();
+      await _pcmSubscription?.cancel();
+      _pcmSubscription = null;
+      final pcm = _pcmBuffer.takeBytes();
+      if (_recordTooLarge) { _message('Аудиозапись ограничена 5 МБ'); }
+      if (pcm.isEmpty) { _message('Пустая запись'); return; }
+      final wav = pcmToWav(pcm);
+      if (mounted) setState(() => pendingMedia.add(NewDiaryMedia(
+        kind: 'audio', bytes: wav, mime: 'audio/wav')));
+    } catch (error) { _message('Ошибка сохранения голоса: $error'); }
+  }
+
+  Widget mediaPreview(String kind, Uint8List bytes, VoidCallback remove) =>
+    Card(
+      child: Padding(
+        padding: const EdgeInsets.all(8),
+        child: Column(children: [
+          Row(children: [
+            Icon(kind == 'audio' ? Icons.mic : Icons.videocam_outlined),
+            const SizedBox(width: 8),
+            Expanded(child: Text(kind == 'audio' ? 'Голосовое сообщение' : 'Видеозапись')),
+            IconButton(onPressed: remove, icon: const Icon(Icons.close),
+                tooltip: 'Удалить вложение'),
+          ]),
+          if (kind == 'audio') JournalAudioPlayer(bytes: bytes)
+          else JournalVideoPlayer(bytes: bytes),
+        ]),
+      ),
+    );
+
+  Widget imagePreview(Uint8List bytes, VoidCallback remove) => Stack(
+    children: [
+      ClipRRect(
+        borderRadius: BorderRadius.circular(12),
+        child: Image.memory(bytes, width: 96, height: 96, fit: BoxFit.cover),
+      ),
+      Positioned(
+        right: 0,
+        top: 0,
+        child: IconButton.filledTonal(
+          tooltip: 'Убрать фотографию',
+          icon: const Icon(Icons.close, size: 17),
+          onPressed: remove,
+        ),
+      ),
+    ],
+  );
 
   Future<void> addMotif() async {
     final controller = TextEditingController();
@@ -231,6 +416,54 @@ class _EntryEditorState extends State<EntryEditor> {
                   border: OutlineInputBorder(),
                 ),
               ),
+              const SizedBox(height: 12),
+              OutlinedButton.icon(
+                onPressed: isLoading || isSaving || pickingImage ? null : pickImage,
+                icon: const Icon(Icons.add_photo_alternate_outlined),
+                label: Text(pickingImage ? 'Открываем галерею...' : 'Фото из галереи'),
+              ),
+              Wrap(spacing: 8, runSpacing: 8, children: [
+                OutlinedButton.icon(
+                  onPressed: pickingImage || isSaving ? null : () => selectPhotoOrCamera(ImageSource.camera),
+                  icon: const Icon(Icons.camera_alt_outlined), label: const Text('Снять фото')),
+                OutlinedButton.icon(
+                  onPressed: pickingMedia || isSaving || isRecording ? null : () => selectVideo(ImageSource.gallery),
+                  icon: const Icon(Icons.video_library_outlined), label: const Text('Добавить видео')),
+                OutlinedButton.icon(
+                  onPressed: pickingMedia || isSaving || isRecording ? null : () => selectVideo(ImageSource.camera),
+                  icon: const Icon(Icons.videocam_outlined), label: const Text('Снять видео')),
+                OutlinedButton.icon(
+                  onPressed: isSaving ? null : (isRecording ? stopRecording : startRecording),
+                  icon: Icon(isRecording ? Icons.stop_circle : Icons.mic_none),
+                  label: Text(isRecording ? 'Стоп (запись голоса)' : 'Записать голос')),
+              ]),
+              if (isRecording) const Text('● Идёт запись голоса. Нажми «Стоп» перед сохранением.'),
+              if (pendingMedia.isNotEmpty || savedMedia.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                for (final media in savedMedia)
+                  if (!removedMediaIds.contains(media.id))
+                    mediaPreview(media.kind, media.bytes,
+                      () => setState(() => removedMediaIds.add(media.id))),
+                for (var i = 0; i < pendingMedia.length; i++)
+                  mediaPreview(pendingMedia[i].kind, pendingMedia[i].bytes,
+                    () => setState(() => pendingMedia.removeAt(i))),
+              ],
+              if (pendingImages.isNotEmpty || savedImages.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    for (final image in savedImages)
+                      if (!removedImageIds.contains(image.id))
+                        imagePreview(image.bytes, () => setState(
+                          () => removedImageIds.add(image.id))),
+                    for (var i = 0; i < pendingImages.length; i++)
+                      imagePreview(pendingImages[i], () => setState(
+                        () => pendingImages.removeAt(i))),
+                  ],
+                ),
+              ],
               const SizedBox(height: 16),
               const Text('Настроение', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
               const SizedBox(height: 6),

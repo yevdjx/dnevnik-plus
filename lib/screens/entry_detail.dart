@@ -1,3 +1,4 @@
+import '../widgets/media_viewer.dart';
 import 'package:flutter/material.dart';
 
 import '../database/diary_database.dart';
@@ -17,6 +18,8 @@ class _EntryDetailState extends State<EntryDetail> {
   EntryContext entryContext = const EntryContext();
   bool metadataLoading = true;
   List<EntryComment> comments = [];
+  List<DiaryImage> images = [];
+  List<DiaryMedia> media = [];
 
   @override
   void initState() {
@@ -30,11 +33,15 @@ class _EntryDetailState extends State<EntryDetail> {
       final motifs = await DiaryDatabase.instance.getMotifs();
       final ctx = await DiaryDatabase.instance.getEntryContext(widget.entry.id);
       final loadedComments = await DiaryDatabase.instance.getComments(widget.entry.id);
+      final loadedImages = await DiaryDatabase.instance.getEntryImages(widget.entry.id);
+      final loadedMedia = await DiaryDatabase.instance.getEntryMedia(widget.entry.id);
       if (!mounted) return;
       setState(() {
         motifNames = motifs.where((m) => ids.contains(m.id)).map((m) => m.name).toList();
         entryContext = ctx;
         comments = loadedComments;
+        images = loadedImages;
+        media = loadedMedia;
         metadataLoading = false;
       });
     } catch (_) {
@@ -155,6 +162,38 @@ class _EntryDetailState extends State<EntryDetail> {
               style: Theme.of(context).textTheme.bodyMedium),
           const SizedBox(height: 24),
           SelectableText(widget.entry.content, style: const TextStyle(fontSize: 17)),
+          if (images.isNotEmpty) ...[
+            const SizedBox(height: 16),
+            const Text('Фотографии', style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold)),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                for (final image in images)
+                  InkWell(
+                    onTap: () => showDialog<void>(
+                      context: context,
+                      builder: (ctx) => Dialog(
+                        child: InteractiveViewer(child: Image.memory(image.bytes)),
+                      ),
+                    ),
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(12),
+                      child: Image.memory(image.bytes,
+                          width: 132, height: 132, fit: BoxFit.cover),
+                    ),
+                  ),
+              ],
+            ),
+          ],
+          if (media.isNotEmpty) ...[
+            const SizedBox(height: 16),
+            const Text('Голос и видео', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 17)),
+            for (final item in media)
+              if (item.kind == 'audio') JournalAudioPlayer(bytes: item.bytes)
+              else JournalVideoPlayer(bytes: item.bytes),
+          ],
           const SizedBox(height: 24),
           if (metadataLoading) const LinearProgressIndicator(),
           if (motifNames.isNotEmpty) ...[

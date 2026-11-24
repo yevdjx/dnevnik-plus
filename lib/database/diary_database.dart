@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 import 'package:sqflite_sqlcipher/sqflite.dart';
 
 import '../security/encrypted_database.dart';
@@ -22,7 +24,7 @@ class DiaryDatabase {
     final db = await openDatabase(
       location.path,
       password: location.password,
-      version: 6,
+      version: 8,
       onConfigure: (db) async {
         await db.execute('PRAGMA foreign_keys = ON');
       },
@@ -41,6 +43,8 @@ class DiaryDatabase {
         await _createMotifContextTables(db);
         await _createReflectionTables(db);
         await _createWellbeingTables(db);
+        await _createImageTable(db);
+        await _createMediaTable(db);
       },
       onUpgrade: (db, oldVersion, newVersion) async {
         if (oldVersion < 2) await _createArcTables(db);
@@ -48,6 +52,8 @@ class DiaryDatabase {
         if (oldVersion < 4) await _createMotifContextTables(db);
         if (oldVersion < 5) await _createReflectionTables(db);
         if (oldVersion < 6) await _createWellbeingTables(db);
+        if (oldVersion < 7) await _createImageTable(db);
+        if (oldVersion < 8) await _createMediaTable(db);
       },
     );
     _database = db;
@@ -69,6 +75,58 @@ class DiaryDatabase {
       _database = null;
       _opening = null;
     }
+  }
+
+  // v7: image bytes stay inside SQLCipher instead of an unencrypted file.
+  static Future<void> _createImageTable(DatabaseExecutor db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS entry_images (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        entry_id INTEGER NOT NULL,
+        data BLOB NOT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (entry_id) REFERENCES entries(id) ON DELETE CASCADE
+      )
+    ''');
+    await db.execute('''
+      CREATE INDEX IF NOT EXISTS idx_entry_images_entry_id
+      ON entry_images(entry_id)
+    ''');
+  }
+
+  Future<List<DiaryImage>> getEntryImages(int entryId) async {
+    // Don't silently promise encrypted media if the database is plaintext.
+    if (!await EncryptedDatabase.instance.enabled) {
+      return const <DiaryImage>[];
+    }
+    final db = await database;
+    final rows = await db.query('entry_images',
+        where: 'entry_id = ?', whereArgs: [entryId], orderBy: 'id ASC');
+    return rows.map(DiaryImage.fromMap).toList();
+  }
+
+  // v8: no plaintext persistent media folder; media payload is in SQLCipher.
+  static Future<void> _createMediaTable(DatabaseExecutor db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS entry_media (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        entry_id INTEGER NOT NULL,
+        kind TEXT NOT NULL CHECK(kind IN ('audio','video')),
+        mime TEXT NOT NULL,
+        data BLOB NOT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY(entry_id) REFERENCES entries(id) ON DELETE CASCADE
+      )
+    ''');
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_entry_media_entry_id ON entry_media(entry_id)');
+  }
+
+  Future<List<DiaryMedia>> getEntryMedia(int entryId) async {
+    if (!await EncryptedDatabase.instance.enabled) return const <DiaryMedia>[];
+    final db = await database;
+    final rows = await db.query('entry_media', where: 'entry_id = ?',
+        whereArgs: [entryId], orderBy: 'id ASC');
+    return rows.map(DiaryMedia.fromMap).toList();
   }
 
   static Future<void> _createArcTables(DatabaseExecutor db) async {
@@ -518,7 +576,7 @@ class DiaryDatabase {
     return rows.map((row) => row['arc_id'] as int).toSet();
   }
 
-  Future<void> saveEntry({
+  Future<int> saveEntry({
     int? id,
     required String title,
     required String content,
@@ -528,9 +586,39 @@ class DiaryDatabase {
     EntryContext entryContext = const EntryContext(),
     String? visibilityKind,
     DateTime? visibleAt,
+    List<Uint8List> newImages = const [],
+    Set<int> removedImageIds = const {},
+    List<NewDiaryMedia> newMedia = const [],
+    Set<int> removedMediaIds = const {},
   }) async {
+    if (newImages.isNotEmpty || removedImageIds.isNotEmpty) {
+      if (!await EncryptedDatabase.instance.enabled) {
+        throw StateError('Сначала включи SQLCipher в настройках безопасности');
+      }
+      if (newImages.any((image) => image.lengthInBytes > 5 * 1024 * 1024)) {
+        throw ArgumentError('Одна фотография не должна превышать 5 МБ');
+      }
+      final existingCount = id == null ? 0 : (await getEntryImages(id)).length;
+      if (existingCount - removedImageIds.length + newImages.length > 5) {
+        throw ArgumentError('К записи можно прикрепить не больше 5 фотографий');
+      }
+    }
+    if (newMedia.isNotEmpty || removedMediaIds.isNotEmpty) {
+      if (!await EncryptedDatabase.instance.enabled) {
+        throw StateError('Для медиа включи шифрование SQLCipher');
+      }
+      if (newMedia.any((item) =>
+          !['audio', 'video'].contains(item.kind) ||
+          item.bytes.isEmpty ||
+          item.bytes.lengthInBytes > (item.kind == 'video' ? 20 * 1024 * 1024 : 5 * 1024 * 1024))) {
+        throw ArgumentError('Неверный тип или размер медиа (видео до 20 МБ, аудио до 5 МБ)');
+      }
+      final existingMedia = id == null ? <DiaryMedia>[] : await getEntryMedia(id);
+      final total = existingMedia.where((item) => !removedMediaIds.contains(item.id)).length + newMedia.length;
+      if (total > 5) throw ArgumentError('Максимум 5 аудио и видео на запись');
+    }
     final db = await database;
-    await db.transaction((txn) async {
+    return db.transaction<int>((txn) async {
       late final int entryId;
       if (id == null) {
         entryId = await txn.insert('entries', {
@@ -578,6 +666,28 @@ class DiaryDatabase {
           'arc_id': arcId,
         });
       }
+      for (final imageId in removedImageIds) {
+        await txn.delete('entry_images',
+            where: 'id = ? AND entry_id = ?', whereArgs: [imageId, entryId]);
+      }
+      for (final bytes in newImages) {
+        await txn.insert('entry_images', {
+          'entry_id': entryId,
+          'data': bytes,
+          'created_at': DateTime.now().toIso8601String(),
+        });
+      }
+      for (final mediaId in removedMediaIds) {
+        await txn.delete('entry_media', where: 'id = ? AND entry_id = ?',
+            whereArgs: [mediaId, entryId]);
+      }
+      for (final item in newMedia) {
+        await txn.insert('entry_media', {
+          'entry_id': entryId, 'kind': item.kind, 'mime': item.mime,
+          'data': item.bytes, 'created_at': DateTime.now().toIso8601String(),
+        });
+      }
+      return entryId;
     });
   }
 
