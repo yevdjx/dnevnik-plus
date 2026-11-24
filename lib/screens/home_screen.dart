@@ -2,14 +2,19 @@ import 'package:flutter/material.dart';
 
 import '../database/diary_database.dart';
 import '../models/diary_models.dart';
+import '../security/security_settings_screen.dart';
 import 'arc_detail.dart';
 import 'entry_detail.dart';
 import 'entry_editor.dart';
 import 'mood_history.dart';
-import 'search_screen.dart';
 import 'questions_screen.dart';
+import 'search_screen.dart';
 import 'wellbeing_screen.dart';
-import '../security/security_settings_screen.dart';
+
+const _ink = Color(0xFF302B27);
+const _muted = Color(0xFF786E64);
+const _accent = Color(0xFF9D783B);
+const _cream = Color(0xFFF1E7DA);
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -19,16 +24,15 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
-  static const moods = ['😢', '😕', '😐', '🙂', '😄'];
-
+  static const _moods = ['😢', '😕', '😐', '🙂', '😄'];
   int selectedTab = 0;
+  bool loading = true;
+  bool savingMood = false;
   List<DiaryEntry> entries = [];
   List<DiaryArc> arcs = [];
-  bool loading = true;
-  List<MoodLog> moodLogs = [];
-  bool savingMood = false;
-  bool reflectionPromptsEnabled = true;
-  int promptIndex = 0;
+  List<DiaryMotif> motifs = [];
+  List<MoodLog> moods = [];
+  Map<String, List<DiaryEntry>> placeGroups = {};
 
   @override
   void initState() {
@@ -38,81 +42,50 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> reload() async {
     try {
-      final loadedEntries = await DiaryDatabase.instance.getEntries();
-      final loadedArcs = await DiaryDatabase.instance.getArcs();
-      final loadedMoods = await DiaryDatabase.instance.getMoodLogs();
-      final promptsOn = await DiaryDatabase.instance.promptsEnabled();
+      final database = DiaryDatabase.instance;
+      final fetchedEntries = await database.getEntries();
+      final fetchedArcs = await database.getArcs();
+      final fetchedMotifs = await database.getMotifs();
+      final fetchedMoods = await database.getMoodLogs();
+      final groups = <String, List<DiaryEntry>>{};
+      for (final entry in fetchedEntries) {
+        final location = (await database.getEntryContext(entry.id)).place.trim();
+        if (location.isNotEmpty) {
+          groups.putIfAbsent(location, () => []).add(entry);
+        }
+      }
       if (!mounted) return;
       setState(() {
-        entries = loadedEntries;
-        arcs = loadedArcs;
-        moodLogs = loadedMoods;
-        reflectionPromptsEnabled = promptsOn;
+        entries = fetchedEntries;
+        arcs = fetchedArcs;
+        motifs = fetchedMotifs;
+        moods = fetchedMoods;
+        placeGroups = groups;
         loading = false;
       });
     } catch (error) {
       if (!mounted) return;
       setState(() => loading = false);
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Ошибка загрузки данных: $error')),
+        SnackBar(content: Text('Не удалось загрузить дневник: $error')),
       );
     }
   }
 
-  Future<void> saveQuickMood(int mood) async {
-    if (savingMood) return;
-    setState(() => savingMood = true);
-    try {
-      await DiaryDatabase.instance.addMoodLog(mood);
-      await reload();
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Настроение сохранено 💜')),
-      );
-    } catch (error) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Не удалось сохранить настроение: $error')),
-      );
-    } finally {
-      if (mounted) setState(() => savingMood = false);
-    }
-  }
-
-  Future<void> openMoodHistory() async {
-    await Navigator.push<void>(
+  Future<void> _open(Widget screen) async {
+    await Navigator.push<Object?>(
       context,
-      MaterialPageRoute(builder: (_) => const MoodHistoryScreen()),
+      MaterialPageRoute(builder: (_) => screen),
     );
-    await reload();
+    if (mounted) await reload();
   }
 
-  Future<void> openEditor() async {
-    final saved = await Navigator.push<bool>(
-      context,
-      MaterialPageRoute(builder: (_) => const EntryEditor()),
-    );
-    if (saved == true) await reload();
-  }
+  Future<void> _openEditor() async => _open(const EntryEditor());
 
-  Future<void> openEntry(DiaryEntry entry) async {
-    final changed = await Navigator.push<bool>(
-      context,
-      MaterialPageRoute(builder: (_) => EntryDetail(entry: entry)),
-    );
-    if (changed == true) await reload();
-  }
+  Future<void> _openEntry(DiaryEntry entry) async =>
+      _open(EntryDetail(entry: entry));
 
-  Future<void> openArc(DiaryArc arc) async {
-    await Navigator.push<bool>(
-      context,
-      MaterialPageRoute(builder: (_) => ArcDetail(arc: arc)),
-    );
-    // Обновляем счётчики и ленту после редактирования/удаления внутри арки.
-    await reload();
-  }
-
-  Future<void> createArc() async {
+  Future<void> _createArc() async {
     final controller = TextEditingController();
     final name = await showDialog<String>(
       context: context,
@@ -122,11 +95,7 @@ class _HomeScreenState extends State<HomeScreen> {
           controller: controller,
           autofocus: true,
           maxLength: 60,
-          decoration: const InputDecoration(
-            labelText: 'Название',
-            hintText: 'Например, Дружба',
-          ),
-          onSubmitted: (value) => Navigator.pop(dialogContext, value),
+          decoration: const InputDecoration(hintText: 'Например, Дружба'),
         ),
         actions: [
           TextButton(
@@ -140,190 +109,444 @@ class _HomeScreenState extends State<HomeScreen> {
         ],
       ),
     );
-    // Освобождаем контроллер после завершения закрытия диалога.
-    // Его жизненный цикл завершится с выходом из этого метода.
-    final cleaned = name?.trim() ?? '';
-    if (cleaned.isEmpty || !mounted) return;
+    // Контроллер не освобождаем до завершения анимации закрытия диалога.
+    if (name == null || name.trim().isEmpty || !mounted) return;
     try {
-      await DiaryDatabase.instance.createArc(cleaned);
+      await DiaryDatabase.instance.createArc(name.trim());
       await reload();
     } catch (error) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Не удалось создать арку. Возможно, такое название уже есть.')),
+        SnackBar(content: Text('Не удалось создать арку: $error')),
       );
     }
   }
 
-  Widget buildEntries() {
-    return ListView(
-      padding: const EdgeInsets.fromLTRB(16, 12, 16, 80),
+  Future<void> _createMotif() async {
+    final controller = TextEditingController();
+    final name = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Новый мотив'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          maxLength: 60,
+          decoration: const InputDecoration(hintText: 'Например, Доверие'),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('Отмена'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, controller.text),
+            child: const Text('Создать'),
+          ),
+        ],
+      ),
+    );
+    if (name == null || name.trim().isEmpty || !mounted) return;
+    try {
+      await DiaryDatabase.instance.createMotif(name.trim());
+      await reload();
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Не удалось создать мотив: $error')),
+      );
+    }
+  }
+
+  Future<void> _openMotif(DiaryMotif motif) async {
+    final selected = await DiaryDatabase.instance.searchEntries(
+      EntryFilters(motifId: motif.id),
+    );
+    if (!mounted) return;
+    await _open(_EntryCollectionScreen(
+      title: 'Мотив «${motif.name}»',
+      entries: selected,
+    ));
+  }
+
+  Future<void> _saveMood(int mood) async {
+    if (savingMood) return;
+    setState(() => savingMood = true);
+    try {
+      await DiaryDatabase.instance.addMoodLog(mood);
+      await reload();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Настроение сохранено')),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Ошибка сохранения: $error')),
+      );
+    } finally {
+      if (mounted) setState(() => savingMood = false);
+    }
+  }
+
+  Widget _header(String title, {String? subtitle}) => Padding(
+    padding: const EdgeInsets.only(top: 12, bottom: 14),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Text('Привет! 🌿',
-            style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold)),
-        const SizedBox(height: 10),
-        const Text('Как ты себя чувствуешь сегодня?',
-            style: TextStyle(fontSize: 18)),
-        const SizedBox(height: 14),
-        Row(
-          mainAxisAlignment: MainAxisAlignment.spaceAround,
+        Text(title, style: const TextStyle(
+          fontSize: 25, fontWeight: FontWeight.w700, color: _ink,
+        )),
+        if (subtitle != null) ...[
+          const SizedBox(height: 4),
+          Text(subtitle, style: const TextStyle(color: _muted)),
+        ],
+      ],
+    ),
+  );
+
+  Widget _entryCard(DiaryEntry entry) {
+    final date = entry.createdAt;
+    final dateText = '${date.day.toString().padLeft(2, '0')}.'
+        '${date.month.toString().padLeft(2, '0')}.${date.year}';
+    return Card(
+      child: InkWell(
+        onTap: () => _openEntry(entry),
+        borderRadius: BorderRadius.circular(14),
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(entry.title, style: const TextStyle(
+                color: _ink, fontSize: 18, fontWeight: FontWeight.w600,
+              )),
+              const SizedBox(height: 4),
+              Text('$dateText  ${_moods[entry.mood.clamp(0, 4).toInt()]}',
+                style: const TextStyle(color: _muted, fontSize: 12)),
+              const SizedBox(height: 12),
+              Text(entry.content, maxLines: 5, overflow: TextOverflow.ellipsis,
+                style: const TextStyle(color: _ink, height: 1.4)),
+              const SizedBox(height: 8),
+              const Align(
+                alignment: Alignment.centerRight,
+                child: Icon(Icons.chevron_right, color: _accent),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _home() => ListView(
+    padding: const EdgeInsets.fromLTRB(16, 10, 16, 28),
+    children: [
+      _header('Дневник+', subtitle: 'Создавай воспоминания'),
+      SizedBox(
+        width: double.infinity,
+        child: FilledButton.icon(
+          onPressed: _openEditor,
+          icon: const Icon(Icons.add_circle_outline, size: 26),
+          label: const Padding(
+            padding: EdgeInsets.symmetric(vertical: 14),
+            child: Text('Новая запись', style: TextStyle(fontSize: 17)),
+          ),
+          style: FilledButton.styleFrom(backgroundColor: _accent),
+        ),
+      ),
+      const SizedBox(height: 17),
+      const Text('Последняя запись', style: TextStyle(
+        fontSize: 18, fontWeight: FontWeight.w600, color: _ink,
+      )),
+      const SizedBox(height: 7),
+      if (entries.isEmpty)
+        const Card(child: Padding(
+          padding: EdgeInsets.all(22),
+          child: Text('Пока нет записей. Начни с первой!'),
+        ))
+      else
+        _entryCard(entries.first),
+      if (entries.length > 1) ...[
+        const SizedBox(height: 16),
+        const Text('Другие записи', style: TextStyle(
+          fontSize: 18, fontWeight: FontWeight.w600, color: _ink,
+        )),
+        ...entries.skip(1).take(5).map(_entryCard),
+        TextButton.icon(
+          onPressed: () => _open(_EntryCollectionScreen(
+            title: 'Все записи', entries: entries,
+          )),
+          icon: const Icon(Icons.menu_book_outlined),
+          label: const Text('Посмотреть все записи'),
+        ),
+      ],
+      const SizedBox(height: 15),
+      const Text('Как ты себя чувствуешь?', style: TextStyle(
+        fontSize: 17, fontWeight: FontWeight.w600, color: _ink,
+      )),
+      const SizedBox(height: 7),
+      Card(child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 8),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
           children: [
-            for (int i = 0; i < moods.length; i++)
+            for (var i = 0; i < _moods.length; i++)
               IconButton(
-                tooltip: 'Сохранить настроение: ${moods[i]}',
-                onPressed: savingMood ? null : () => saveQuickMood(i),
-                icon: Text(moods[i], style: const TextStyle(fontSize: 30)),
+                tooltip: 'Сохранить настроение ${_moods[i]}',
+                onPressed: savingMood ? null : () => _saveMood(i),
+                icon: Text(_moods[i], style: const TextStyle(fontSize: 25)),
               ),
           ],
         ),
-        const SizedBox(height: 10),
-        Card(
-          child: ListTile(
-            leading: const Icon(Icons.show_chart),
-            title: const Text('История настроения'),
-            subtitle: Text('Быстрых отметок: ${moodLogs.length}'),
-            trailing: const Icon(Icons.chevron_right),
-            onTap: openMoodHistory,
+      )),
+      TextButton.icon(
+        onPressed: () => _open(const MoodHistoryScreen()),
+        icon: const Icon(Icons.bar_chart_outlined),
+        label: Text('История настроения (${moods.length})'),
+      ),
+    ],
+  );
+
+  Widget _directory({
+    required String title,
+    required String hint,
+    required List<Widget> children,
+    required VoidCallback? onAdd,
+  }) => ListView(
+    padding: const EdgeInsets.fromLTRB(16, 10, 16, 28),
+    children: [
+      _header(title, subtitle: hint),
+      if (onAdd != null)
+        Align(
+          alignment: Alignment.centerLeft,
+          child: OutlinedButton.icon(
+            onPressed: onAdd,
+            icon: const Icon(Icons.add),
+            label: Text('Создать ${title == 'Арки' ? 'арку' : 'мотив'}'),
           ),
         ),
-        const SizedBox(height: 12),
-        Card(child: ListTile(
-          leading: const Icon(Icons.schedule),
-          title: const Text('Отложенные вопросы'),
-          subtitle: const Text('Вопросы к себе на будущее'),
-          trailing: const Icon(Icons.chevron_right),
-          onTap: () async {
-            await Navigator.push<void>(context,
-              MaterialPageRoute(builder: (_) => const QuestionsScreen()));
-            if (mounted) await reload();
-          },
-        )),
-        Card(child: ListTile(
-          leading: const Icon(Icons.favorite_outline),
-          title: const Text('Самочувствие за неделю'),
-          subtitle: const Text('Опросник и история ответов'),
-          trailing: const Icon(Icons.chevron_right),
-          onTap: () async {
-            await Navigator.push<void>(context,
-              MaterialPageRoute(builder: (_) => const WellbeingScreen()));
-            if (mounted) await reload();
-          },
-        )),
-        const SizedBox(height: 12),
-        if (reflectionPromptsEnabled) Card(child: Padding(
-          padding: const EdgeInsets.all(12),
-          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            const Text('Вопрос для размышления',
-              style: TextStyle(fontSize: 17, fontWeight: FontWeight.w600)),
-            const SizedBox(height: 8),
-            Text(reflectionPromptForMood(moodLogs.isEmpty ? null : moodLogs.first.mood,
-              promptIndex)),
-            Row(children: [
-              TextButton.icon(onPressed: () => setState(() => promptIndex++),
-                icon: const Icon(Icons.skip_next), label: const Text('Другой вопрос')),
-              const Spacer(),
-              TextButton(onPressed: () async {
-                await DiaryDatabase.instance.setPromptsEnabled(false);
-                if (mounted) setState(() => reflectionPromptsEnabled = false);
-              }, child: const Text('Отключить')),
-            ]),
-          ]),
-        )) else Align(alignment: Alignment.centerLeft, child: TextButton.icon(
-          onPressed: () async {
-            await DiaryDatabase.instance.setPromptsEnabled(true);
-            if (mounted) setState(() => reflectionPromptsEnabled = true);
-          }, icon: const Icon(Icons.lightbulb_outline),
-          label: const Text('Включить вопросы для размышления'),
-        )),
-        const SizedBox(height: 28),
-        const Text('Мои записи',
-            style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
-        const SizedBox(height: 12),
-        if (entries.isEmpty)
-          const Padding(
-            padding: EdgeInsets.all(30),
-            child: Center(child: Text('Пока здесь пусто.\nНачни с первой записи 💜',
-                textAlign: TextAlign.center)),
-          )
-        else
-          for (final entry in entries)
-            Card(
-              child: ListTile(
-                leading: Text(moods[entry.mood.clamp(0, 4).toInt()],
-                    style: const TextStyle(fontSize: 27)),
-                title: Text(entry.title),
-                subtitle: Text(entry.content,
-                    maxLines: 2, overflow: TextOverflow.ellipsis),
-                onTap: () => openEntry(entry),
-              ),
-            ),
+      const SizedBox(height: 12),
+      if (children.isEmpty)
+        const Card(child: Padding(
+          padding: EdgeInsets.all(22),
+          child: Text('Здесь пока пусто.'),
+        ))
+      else
+        ...children,
+    ],
+  );
+
+  Widget _directoryItem({
+    required String name,
+    required String count,
+    required IconData icon,
+    required VoidCallback onTap,
+  }) => Card(
+    child: ListTile(
+      leading: Icon(icon, color: _accent),
+      title: Text(name, style: const TextStyle(fontWeight: FontWeight.w600)),
+      subtitle: Text(count, style: const TextStyle(color: _muted)),
+      trailing: const Icon(Icons.chevron_right),
+      onTap: onTap,
+    ),
+  );
+
+  Widget _arcs() => _directory(
+    title: 'Арки',
+    hint: 'Истории, которые продолжаются',
+    onAdd: _createArc,
+    children: [
+      for (final arc in arcs)
+        _directoryItem(
+          name: arc.name,
+          count: 'Записей: ${arc.entryCount}',
+          icon: Icons.auto_stories_outlined,
+          onTap: () => _open(ArcDetail(arc: arc)),
+        ),
+    ],
+  );
+
+  Widget _motifs() => _directory(
+    title: 'Мотивы',
+    hint: 'Повторяющиеся темы твоего дневника',
+    onAdd: _createMotif,
+    children: [
+      for (final motif in motifs)
+        _directoryItem(
+          name: motif.name,
+          count: 'Открыть связанные записи',
+          icon: Icons.psychology_outlined,
+          onTap: () => _openMotif(motif),
+        ),
+    ],
+  );
+
+  Widget _contexts() {
+    final places = placeGroups.keys.toList()
+      ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+    return _directory(
+      title: 'Контексты',
+      hint: 'Группы по месту, указанному в записи',
+      onAdd: null,
+      children: [
+        for (final place in places)
+          _directoryItem(
+            name: place,
+            count: 'Записей: ${placeGroups[place]!.length}',
+            icon: Icons.place_outlined,
+            onTap: () => _open(_EntryCollectionScreen(
+              title: 'Контекст «$place»',
+              entries: placeGroups[place]!,
+            )),
+          ),
+        if (places.isEmpty)
+          const Card(child: Padding(
+            padding: EdgeInsets.all(16),
+            child: Text('Добавь место в разделе «Контекст записи» при создании записи.'),
+          )),
       ],
     );
   }
 
-  Widget buildArcs() {
-    if (arcs.isEmpty) {
-      return const Center(
-        child: Padding(
-          padding: EdgeInsets.all(24),
-          child: Text('Арки пока не созданы.\nНажми «Новая арка»!',
-              textAlign: TextAlign.center),
+  Widget _settings() => ListView(
+    padding: const EdgeInsets.fromLTRB(16, 10, 16, 28),
+    children: [
+      _header('Настройки', subtitle: 'Дневник и дополнительные функции'),
+      _settingsTile(Icons.search, 'Поиск по записям',
+        () => _open(const SearchScreen())),
+      _settingsTile(Icons.bar_chart_outlined, 'Динамика настроения',
+        () => _open(const MoodHistoryScreen())),
+      _settingsTile(Icons.schedule_outlined, 'Отложенные вопросы',
+        () => _open(const QuestionsScreen())),
+      _settingsTile(Icons.favorite_outline, 'Самочувствие за неделю',
+        () => _open(const WellbeingScreen())),
+      _settingsTile(Icons.lock_outline, 'Безопасность и PIN',
+        () => _open(const SecuritySettingsScreen())),
+      const SizedBox(height: 16),
+      const Padding(
+        padding: EdgeInsets.all(12),
+        child: Text(
+          'Дневник+ · Интерфейс v0.9\n'
+          'Личные записи хранятся на устройстве.',
+          style: TextStyle(color: _muted),
         ),
-      );
-    }
-    return ListView.builder(
-      padding: const EdgeInsets.fromLTRB(12, 12, 12, 80),
-      itemCount: arcs.length,
-      itemBuilder: (context, index) {
-        final arc = arcs[index];
-        return Card(
-          child: ListTile(
-            leading: const Icon(Icons.auto_awesome_outlined),
-            title: Text(arc.name),
-            subtitle: Text('Записей: ${arc.entryCount}'),
-            trailing: const Icon(Icons.chevron_right),
-            onTap: () => openArc(arc),
-          ),
-        );
-      },
-    );
-  }
+      ),
+    ],
+  );
+
+  Widget _settingsTile(IconData icon, String title, VoidCallback onTap) => Card(
+    child: ListTile(
+      leading: Icon(icon, color: _accent),
+      title: Text(title),
+      trailing: const Icon(Icons.chevron_right),
+      onTap: onTap,
+    ),
+  );
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Дневник+'), centerTitle: true,
-        actions: [IconButton(
-          tooltip: 'Безопасность', icon: const Icon(Icons.lock_outline),
-          onPressed: () => Navigator.push<void>(context,
-            MaterialPageRoute(builder: (_) => const SecuritySettingsScreen())),
-        ), IconButton(
-          tooltip: 'Поиск', icon: const Icon(Icons.search),
-          onPressed: () async {
-            await Navigator.push<void>(context,
-                MaterialPageRoute(builder: (_) => const SearchScreen()));
-            if (mounted) await reload();
-          },
-        )],
+      appBar: AppBar(
+        title: const Text('Дневник+', style: TextStyle(
+          fontWeight: FontWeight.w700,
+        )),
+        actions: [
+          IconButton(
+            tooltip: 'Поиск',
+            onPressed: () => _open(const SearchScreen()),
+            icon: const Icon(Icons.search),
+          ),
+        ],
       ),
       body: loading
           ? const Center(child: CircularProgressIndicator())
-          : selectedTab == 0
-              ? buildEntries()
-              : buildArcs(),
-      bottomNavigationBar: NavigationBar(
-        selectedIndex: selectedTab,
-        onDestinationSelected: (index) => setState(() => selectedTab = index),
-        destinations: const [
-          NavigationDestination(icon: Icon(Icons.view_agenda_outlined), label: 'Лента'),
-          NavigationDestination(icon: Icon(Icons.hub_outlined), label: 'Арки'),
-        ],
-      ),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: selectedTab == 0 ? openEditor : createArc,
-        icon: Icon(selectedTab == 0 ? Icons.edit_outlined : Icons.add),
-        label: Text(selectedTab == 0 ? 'Новая запись' : 'Новая арка'),
+          : IndexedStack(index: selectedTab, children: [
+              _home(), _arcs(), _motifs(), _contexts(), _settings(),
+            ]),
+      bottomNavigationBar: NavigationBarTheme(
+        data: NavigationBarThemeData(
+          height: 72,
+          backgroundColor: _cream,
+          indicatorColor: const Color(0xFFE3D0B6),
+          labelTextStyle: WidgetStateProperty.all(
+            const TextStyle(fontSize: 10, color: _ink),
+          ),
+        ),
+        child: NavigationBar(
+          selectedIndex: selectedTab,
+          labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
+          onDestinationSelected: (index) => setState(() => selectedTab = index),
+          destinations: const [
+            NavigationDestination(
+              icon: Icon(Icons.home_outlined),
+              selectedIcon: Icon(Icons.home),
+              label: 'Главная',
+            ),
+            NavigationDestination(
+              icon: Icon(Icons.auto_stories_outlined),
+              selectedIcon: Icon(Icons.auto_stories),
+              label: 'Арки',
+            ),
+            NavigationDestination(
+              icon: Icon(Icons.psychology_outlined),
+              selectedIcon: Icon(Icons.psychology),
+              label: 'Мотивы',
+            ),
+            NavigationDestination(
+              icon: Icon(Icons.layers_outlined),
+              selectedIcon: Icon(Icons.layers),
+              label: 'Контексты',
+            ),
+            NavigationDestination(
+              icon: Icon(Icons.settings_outlined),
+              selectedIcon: Icon(Icons.settings),
+              label: 'Настройки',
+            ),
+          ],
+        ),
       ),
     );
   }
+}
+
+class _EntryCollectionScreen extends StatefulWidget {
+  const _EntryCollectionScreen({required this.title, required this.entries});
+  final String title;
+  final List<DiaryEntry> entries;
+
+  @override
+  State<_EntryCollectionScreen> createState() => _EntryCollectionScreenState();
+}
+
+class _EntryCollectionScreenState extends State<_EntryCollectionScreen> {
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    appBar: AppBar(title: Text(widget.title)),
+    body: widget.entries.isEmpty
+        ? const Center(child: Text('Пока нет связанных записей'))
+        : ListView.builder(
+            padding: const EdgeInsets.all(16),
+            itemCount: widget.entries.length,
+            itemBuilder: (context, i) {
+              final entry = widget.entries[i];
+              return Card(child: ListTile(
+                title: Text(entry.title),
+                subtitle: Text(entry.content,
+                    maxLines: 3, overflow: TextOverflow.ellipsis),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () async {
+                  final changed = await Navigator.push<bool>(
+                    context,
+                    MaterialPageRoute(builder: (_) => EntryDetail(entry: entry)),
+                  );
+                  // После изменения или удаления возвращаемся к обновляемому списку.
+                  if (changed == true && context.mounted) {
+                    Navigator.pop(context);
+                  }
+                },
+              ));
+            },
+          ),
+  );
 }

@@ -174,58 +174,106 @@ class _EntryEditorState extends State<EntryEditor> {
 
   @override
   Widget build(BuildContext context) {
+    const ink = Color(0xFF342D27);
+    const gold = Color(0xFF9F7A3D);
+    const paper = Color(0xFFF2E7D9);
+    final selectedColor = Theme.of(context).colorScheme.primary;
+
     return Scaffold(
-      appBar: AppBar(title: Text(widget.entry == null ? 'Новая запись' : 'Изменить запись')),
+      appBar: AppBar(
+        title: Text(widget.entry == null ? 'Новая запись' : 'Изменить запись'),
+        actions: [
+          TextButton.icon(
+            onPressed: isSaving || isLoading ? null : save,
+            icon: const Icon(Icons.check),
+            label: const Text('Готово'),
+          ),
+          const SizedBox(width: 8),
+        ],
+      ),
       body: SafeArea(
         child: SingleChildScrollView(
-          padding: const EdgeInsets.all(20),
+          keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+          padding: const EdgeInsets.fromLTRB(18, 12, 18, 32),
           child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
+              Text(
+                widget.entry == null
+                    ? 'Новая запись • ${DateTime.now().day.toString().padLeft(2, '0')}.${DateTime.now().month.toString().padLeft(2, '0')}.${DateTime.now().year}'
+                    : 'Редактирование записи',
+                style: const TextStyle(color: Color(0xFF807266), fontSize: 12),
+              ),
+              const SizedBox(height: 10),
               TextField(
                 controller: titleController,
+                textCapitalization: TextCapitalization.sentences,
+                style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w600, color: ink),
                 decoration: const InputDecoration(
-                  labelText: 'Заголовок',
+                  hintText: 'Название записи',
+                  filled: true,
+                  fillColor: paper,
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: contentController,
+                textCapitalization: TextCapitalization.sentences,
+                keyboardType: TextInputType.multiline,
+                minLines: 7,
+                maxLines: 15,
+                decoration: const InputDecoration(
+                  hintText: 'Что произошло? О чём ты думаешь?',
+                  alignLabelWithHint: true,
+                  filled: true,
+                  fillColor: paper,
                   border: OutlineInputBorder(),
                 ),
               ),
               const SizedBox(height: 16),
-              const Text('Настроение', style: TextStyle(fontSize: 18)),
+              const Text('Настроение', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+              const SizedBox(height: 6),
               Row(
-                mainAxisAlignment: MainAxisAlignment.spaceAround,
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
                   for (int i = 0; i < moods.length; i++)
                     IconButton(
                       tooltip: 'Настроение ${i + 1} из 5',
                       onPressed: () => setState(() => selectedMood = i),
                       style: IconButton.styleFrom(
-                        backgroundColor: selectedMood == i
-                            ? const Color(0xFFE5D8FA)
-                            : null,
+                        backgroundColor: selectedMood == i ? selectedColor.withValues(alpha: 0.14) : null,
+                        side: selectedMood == i ? BorderSide(color: selectedColor, width: 1.5) : BorderSide.none,
                       ),
                       icon: Text(moods[i], style: const TextStyle(fontSize: 27)),
                     ),
                 ],
               ),
               const SizedBox(height: 12),
-              const Text('Арки (можно выбрать несколько)',
-                  style: TextStyle(fontSize: 17)),
-              const SizedBox(height: 8),
-              if (isLoading)
-                const LinearProgressIndicator()
-              else if (arcs.isEmpty)
-                const Text('Арки ещё не созданы. Их можно добавить во вкладке «Арки».')
-              else
-                SizedBox(
-                  height: 65,
-                  child: SingleChildScrollView(
-                    scrollDirection: Axis.horizontal,
-                    child: Row(
-                      children: [
-                        for (final arc in arcs)
-                          Padding(
-                            padding: const EdgeInsets.only(right: 8),
-                            child: FilterChip(
+              if (isLoading) const LinearProgressIndicator(),
+              Card(
+                color: paper,
+                elevation: 0,
+                clipBehavior: Clip.antiAlias,
+                child: ExpansionTile(
+                  initiallyExpanded: widget.entry != null && selectedArcIds.isNotEmpty,
+                  leading: const Icon(Icons.auto_stories_outlined, color: gold),
+                  title: const Text('Арки'),
+                  subtitle: const Text('Свяжи запись с историями'),
+                  childrenPadding: const EdgeInsets.fromLTRB(14, 0, 14, 12),
+                  children: [
+                    if (arcs.isEmpty)
+                      const Align(
+                        alignment: Alignment.centerLeft,
+                        child: Text('Арки ещё не созданы. Добавь их во вкладке «Арки».', style: TextStyle(fontSize: 13)),
+                      )
+                    else
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 4,
+                        children: [
+                          for (final arc in arcs)
+                            FilterChip(
                               label: Text(arc.name),
                               selected: selectedArcIds.contains(arc.id),
                               onSelected: (selected) {
@@ -238,93 +286,132 @@ class _EntryEditorState extends State<EntryEditor> {
                                 });
                               },
                             ),
+                        ],
+                      ),
+                  ],
+                ),
+              ),
+              Card(
+                color: paper,
+                elevation: 0,
+                clipBehavior: Clip.antiAlias,
+                child: ExpansionTile(
+                  leading: const Icon(Icons.psychology_outlined, color: gold),
+                  title: const Text('Мотивы'),
+                  subtitle: const Text('Темы и повторяющиеся мысли'),
+                  childrenPadding: const EdgeInsets.fromLTRB(14, 0, 14, 12),
+                  children: [
+                    Align(
+                      alignment: Alignment.centerLeft,
+                      child: Wrap(
+                        spacing: 8,
+                        runSpacing: 4,
+                        children: [
+                          for (final motif in motifs)
+                            FilterChip(
+                              label: Text(motif.name),
+                              selected: selectedMotifIds.contains(motif.id),
+                              onSelected: (selected) => setState(() {
+                                if (selected) {
+                                  selectedMotifIds.add(motif.id);
+                                } else {
+                                  selectedMotifIds.remove(motif.id);
+                                }
+                              }),
+                            ),
+                          ActionChip(
+                            avatar: const Icon(Icons.add, size: 18),
+                            label: const Text('Новый мотив'),
+                            onPressed: addMotif,
                           ),
-                      ],
+                        ],
+                      ),
                     ),
-                  ),
+                  ],
                 ),
-              const SizedBox(height: 12),
-              const Text('Мотивы (можно выбрать несколько)',
-                  style: TextStyle(fontSize: 17)),
-              const SizedBox(height: 8),
-              Wrap(spacing: 8, children: [
-                for (final motif in motifs)
-                  FilterChip(
-                    label: Text(motif.name),
-                    selected: selectedMotifIds.contains(motif.id),
-                    onSelected: (selected) => setState(() {
-                      if (selected) { selectedMotifIds.add(motif.id); }
-                      else { selectedMotifIds.remove(motif.id); }
-                    }),
-                  ),
-                ActionChip(
-                  avatar: const Icon(Icons.add, size: 18),
-                  label: const Text('Новый мотив'),
-                  onPressed: addMotif,
-                ),
-              ]),
-              const SizedBox(height: 16),
-              const Text('Контекст записи', style: TextStyle(fontSize: 17)),
-              const SizedBox(height: 10),
-              contextField(placeController, 'Место'),
-              contextField(timeController, 'Время суток'),
-              contextField(peopleController, 'Люди рядом'),
-              contextField(atmosphereController, 'Атмосфера / погода'),
-              contextField(periodController, 'Период жизни'),
-              const SizedBox(height: 10),
-              const Text('Доступ к записи', style: TextStyle(fontSize: 17)),
-              const SizedBox(height: 8),
-              DropdownButtonFormField<String>(
-                initialValue: visibilityKind ?? 'normal',
-                decoration: const InputDecoration(border: OutlineInputBorder()),
-                items: const [
-                  DropdownMenuItem(value: 'normal', child: Text('Обычная запись')),
-                  DropdownMenuItem(value: 'future', child: Text('Письмо в будущее')),
-                  DropdownMenuItem(value: 'frozen', child: Text('Заморозить до даты')),
-                ],
-                onChanged: (value) => setState(() {
-                  visibilityKind = value == 'normal' ? null : value;
-                  if (visibilityKind == null) visibleAt = null;
-                }),
               ),
-              if (visibilityKind != null) ...[
-                const SizedBox(height: 8),
-                OutlinedButton.icon(
-                  icon: const Icon(Icons.event),
-                  label: Text(visibleAt == null ? 'Выбрать дату открытия'
-                      : 'Открыть ${visibleAt!.day}.${visibleAt!.month}.${visibleAt!.year}'),
-                  onPressed: () async {
-                    final now = DateTime.now();
-                    final picked = await showDatePicker(
-                      context: context, initialDate: visibleAt ?? now.add(const Duration(days: 1)),
-                      firstDate: DateTime(now.year, now.month, now.day + 1),
-                      lastDate: DateTime(now.year + 30),
-                    );
-                    if (picked != null && mounted) setState(() => visibleAt = picked);
-                  },
+              Card(
+                color: paper,
+                elevation: 0,
+                clipBehavior: Clip.antiAlias,
+                child: ExpansionTile(
+                  leading: const Icon(Icons.layers_outlined, color: gold),
+                  title: const Text('Контекст'),
+                  subtitle: const Text('Место, время, люди, атмосфера'),
+                  childrenPadding: const EdgeInsets.fromLTRB(14, 0, 14, 12),
+                  children: [
+                    contextField(placeController, 'Место'),
+                    contextField(timeController, 'Время суток'),
+                    contextField(peopleController, 'Люди рядом'),
+                    contextField(atmosphereController, 'Атмосфера / погода'),
+                    contextField(periodController, 'Период жизни'),
+                  ],
                 ),
-                const Text('Это скрытие в приложении, а не шифрование.',
-                    style: TextStyle(fontSize: 12)),
-              ],
-              const SizedBox(height: 16),
-              const Text('Текст записи', style: TextStyle(fontSize: 17)),
-              const SizedBox(height: 8),
-              TextField(
-                  controller: contentController,
-                  minLines: 5,
-                  maxLines: 12,
-                  decoration: const InputDecoration(
-                    hintText: 'Что произошло? О чём ты думаешь?',
-                    border: OutlineInputBorder(),
-                  ),
               ),
-              const SizedBox(height: 12),
-              SizedBox(
-                width: double.infinity,
-                child: FilledButton.icon(
-                  onPressed: isSaving || isLoading ? null : save,
-                  icon: const Icon(Icons.save),
-                  label: Text(isSaving ? 'Сохраняем...' : 'Сохранить запись'),
+              Card(
+                color: paper,
+                elevation: 0,
+                clipBehavior: Clip.antiAlias,
+                child: ExpansionTile(
+                  initiallyExpanded: visibilityKind != null,
+                  leading: const Icon(Icons.lock_clock_outlined, color: gold),
+                  title: const Text('Доступ к записи'),
+                  subtitle: const Text('Обычная, письмо в будущее или замороженная'),
+                  childrenPadding: const EdgeInsets.fromLTRB(14, 0, 14, 12),
+                  children: [
+                    DropdownButtonFormField<String>(
+                      key: ValueKey(visibilityKind ?? 'normal'),
+                      initialValue: visibilityKind ?? 'normal',
+                      decoration: const InputDecoration(border: OutlineInputBorder()),
+                      items: const [
+                        DropdownMenuItem(value: 'normal', child: Text('Обычная запись')),
+                        DropdownMenuItem(value: 'future', child: Text('Письмо в будущее')),
+                        DropdownMenuItem(value: 'frozen', child: Text('Заморозить до даты')),
+                      ],
+                      onChanged: (value) => setState(() {
+                        visibilityKind = value == 'normal' ? null : value;
+                        if (visibilityKind == null) visibleAt = null;
+                      }),
+                    ),
+                    if (visibilityKind != null) ...[
+                      const SizedBox(height: 8),
+                      OutlinedButton.icon(
+                        icon: const Icon(Icons.event),
+                        label: Text(visibleAt == null
+                            ? 'Выбрать дату открытия'
+                            : 'Открыть ${visibleAt!.day}.${visibleAt!.month}.${visibleAt!.year}'),
+                        onPressed: () async {
+                          final now = DateTime.now();
+                          final first = DateTime(now.year, now.month, now.day + 1);
+                          final last = DateTime(now.year + 30);
+                          final initial = visibleAt != null && !visibleAt!.isBefore(first) && !visibleAt!.isAfter(last)
+                              ? visibleAt!
+                              : first;
+                          final picked = await showDatePicker(
+                            context: context,
+                            initialDate: initial,
+                            firstDate: first,
+                            lastDate: last,
+                          );
+                          if (picked != null && mounted) {
+                            setState(() => visibleAt = picked);
+                          }
+                        },
+                      ),
+                      const Text('Это скрытие в приложении, а не отдельное шифрование.',
+                          style: TextStyle(fontSize: 12)),
+                    ],
+                  ],
+                ),
+              ),
+              const SizedBox(height: 18),
+              FilledButton.icon(
+                onPressed: isSaving || isLoading ? null : save,
+                icon: const Icon(Icons.save_outlined),
+                label: Text(isSaving ? 'Сохраняем...' : 'Сохранить запись'),
+                style: FilledButton.styleFrom(
+                  backgroundColor: gold,
+                  minimumSize: const Size.fromHeight(52),
                 ),
               ),
             ],
